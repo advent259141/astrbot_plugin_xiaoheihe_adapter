@@ -31,12 +31,14 @@ class XiaoHeiHeMessageEvent(AstrMessageEvent):
 
     async def send(self, message: MessageChain) -> None:
         text = self._message_chain_to_text(message).strip()
-        if text:
+        image_urls = self._message_chain_to_image_urls(message)
+        if text or image_urls:
             if len(text) > self.max_reply_chars:
                 text = text[: self.max_reply_chars].rstrip()
             await self.client.send_text_to_session(
                 self.session_id,
                 text,
+                image_urls=image_urls,
                 cooldown_seconds=self.comment_cooldown_seconds,
             )
             if self._on_sent:
@@ -54,8 +56,7 @@ class XiaoHeiHeMessageEvent(AstrMessageEvent):
             elif isinstance(comp, At):
                 parts.append(f"@{comp.name or comp.qq}")
             elif isinstance(comp, Image):
-                url = _first_text(getattr(comp, "url", ""), getattr(comp, "file", ""))
-                parts.append(f"[图片:{url}]" if url.startswith("http") else "[图片]")
+                continue
             elif isinstance(comp, Record):
                 parts.append("[语音]")
             elif isinstance(comp, Video):
@@ -66,6 +67,17 @@ class XiaoHeiHeMessageEvent(AstrMessageEvent):
             else:
                 parts.append(f"[{getattr(comp, 'type', comp.__class__.__name__)}]")
         return "".join(parts)
+
+    @staticmethod
+    def _message_chain_to_image_urls(message: MessageChain) -> list[str]:
+        urls: list[str] = []
+        for comp in message.chain:
+            if not isinstance(comp, Image):
+                continue
+            url = _first_text(getattr(comp, "url", ""), getattr(comp, "file", ""))
+            if url.startswith(("http://", "https://")):
+                urls.append(url)
+        return list(dict.fromkeys(urls))
 
 
 def _first_text(*values: Any) -> str:

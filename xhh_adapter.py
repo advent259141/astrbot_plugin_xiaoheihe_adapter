@@ -9,7 +9,7 @@ from typing import Any, cast
 
 from astrbot import logger
 from astrbot.api.event import MessageChain
-from astrbot.api.message_components import Plain
+from astrbot.api.message_components import Image, Plain
 from astrbot.api.platform import (
     AstrBotMessage,
     MessageMember,
@@ -23,9 +23,10 @@ from astrbot.core.platform.platform import PlatformStatus
 
 from .xhh_client import (
     IncomingMessage,
+    LinkContext,
     XiaoHeiHeClient,
     XiaoHeiHeLoginExpired,
-    summarize_link_context,
+    summarize_link_context_data,
 )
 from .xhh_event import XiaoHeiHeMessageEvent
 from .xhh_session import merge_saved_session_config
@@ -313,13 +314,15 @@ class XiaoHeiHePlatformAdapter(Platform):
         message_chain: MessageChain,
     ) -> None:
         text = XiaoHeiHeMessageEvent._message_chain_to_text(message_chain).strip()
+        image_urls = XiaoHeiHeMessageEvent._message_chain_to_image_urls(message_chain)
         max_reply_chars = max(1, int(self.config.get("max_reply_chars") or 800))
         if len(text) > max_reply_chars:
             text = text[:max_reply_chars].rstrip()
-        if text:
+        if text or image_urls:
             await self.client.send_text_to_session(
                 session.session_id,
                 text,
+                image_urls=image_urls,
                 cooldown_seconds=int(self.config.get("comment_cooldown_seconds") or 30),
             )
             self._stats["send_count"] += 1
@@ -398,8 +401,8 @@ class XiaoHeiHePlatformAdapter(Platform):
         seen.add(value)
 
     async def _commit_incoming(self, message: IncomingMessage) -> None:
-        context_text = await self._fetch_context_text(message)
-        abm = self._to_astrbot_message(message, context_text)
+        context = await self._fetch_context(message)
+        abm = self._to_astrbot_message(message, context)
         event = XiaoHeiHeMessageEvent(
             message_str=abm.message_str,
             message_obj=abm,
@@ -417,6 +420,8 @@ class XiaoHeiHePlatformAdapter(Platform):
         event.set_extra("xiaoheihe_reply_id", message.reply_id)
         event.set_extra("xiaoheihe_root_id", message.root_id)
         event.set_extra("xiaoheihe_link_title", message.link_title)
+        event.set_extra("xiaoheihe_rich_text", self._build_rich_text_extra(message, context))
+        event.set_extra("xiaoheihe_image_urls", self._collect_image_urls(message, context))
         self.commit_event(event)
         self._stats["committed_count"] += 1
         self._stats["last_message_at"] = int(time.time())
@@ -425,12 +430,12 @@ class XiaoHeiHePlatformAdapter(Platform):
         self._stats["send_count"] += 1
         self._stats["last_send_at"] = int(time.time())
 
-    async def _fetch_context_text(self, message: IncomingMessage) -> str:
+    async def _fetch_context(self, message: IncomingMessage) -> LinkContext:
         if not bool(self.config.get("include_link_context", True)):
-            return ""
+            return LinkContext()
         try:
             data = await self.client.fetch_link_context(message.link_id)
-            return summarize_link_context(
+            return summarize_link_context_data(
                 data,
                 max_comment_lines=int(
                     self.config.get("max_context_comment_lines") or 8,
@@ -443,18 +448,19 @@ class XiaoHeiHePlatformAdapter(Platform):
                 message.link_id,
                 exc,
             )
-            return ""
+            return LinkContext()
 
     def _to_astrbot_message(
         self,
         message: IncomingMessage,
-        context_text: str = "",
+        context: LinkContext | None = None,
     ) -> AstrBotMessage:
+        context = context or LinkContext()
         text = message.text or message.notification_text or "[小黑盒消息]"
         if message.link_title:
             text = f"{text}\n\n帖子：{message.link_title}"
-        if context_text:
-            text = f"{text}\n\n---\n{context_text}"
+        if context.text:
+            text = f"{text}\n\n---\n{context.text}"
         abm = AstrBotMessage()
         abm.type = MessageType.FRIEND_MESSAGE
         abm.self_id = self.client.get_heybox_id() or self.meta().id
@@ -466,9 +472,36 @@ class XiaoHeiHePlatformAdapter(Platform):
         )
         abm.message_str = text
         abm.message = [Plain(text=text)]
+        for url in self._collect_image_urls(message, context):
+            abm.message.append(Image(file=url, url=url))
         abm.timestamp = message.timestamp
         abm.raw_message = message.raw or {}
         return abm
+
+    @staticmethod
+    def _collect_image_urls(
+        message: IncomingMessage,
+        context: LinkContext | None = None,
+    ) -> list[str]:
+        context = context or LinkContext()
+        urls = [
+            *message.image_urls,
+            *message.replied_image_urls,
+            *context.image_urls,
+            *context.comment_image_urls,
+        ]
+        return list(dict.fromkeys(str(url).strip() for url in urls if str(url).strip()))
+
+    @staticmethod
+    def _build_rich_text_extra(
+        message: IncomingMessage,
+        context: LinkContext | None = None,
+    ) -> dict[str, Any]:
+        context = context or LinkContext()
+        return {
+            "message": message.rich_text,
+            "context": context.rich_text,
+        }
 
     def _record_runtime_error(
         self,

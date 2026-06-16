@@ -8,7 +8,7 @@ import random
 import re
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.cookies import SimpleCookie
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse
@@ -21,6 +21,7 @@ WEB_ORIGIN = "https://www.xiaoheihe.cn"
 MESSAGE_API_PATH = "/bbs/app/user/message"
 LINK_TREE_API_PATH = "/bbs/app/link/tree"
 COMMENT_CREATE_API_PATH = "/bbs/app/comment/create"
+IMAGE_COPY_BY_URL_API_PATH = "/bbs/app/api/qcloud/cos/copy/image/by/url"
 QRCODE_URL_API_PATH = "/account/get_qrcode_url/"
 QR_STATE_API_PATH = "/account/qr_state/"
 
@@ -111,11 +112,22 @@ class IncomingMessage:
     link_title: str = ""
     notification_text: str = ""
     replied_text: str = ""
+    rich_text: dict[str, Any] = field(default_factory=dict)
+    image_urls: list[str] = field(default_factory=list)
+    replied_image_urls: list[str] = field(default_factory=list)
     raw: dict[str, Any] | None = None
 
     @property
     def target_key(self) -> str:
         return f"{self.link_id}::{self.reply_id}"
+
+
+@dataclass
+class LinkContext:
+    text: str = ""
+    rich_text: dict[str, Any] = field(default_factory=dict)
+    image_urls: list[str] = field(default_factory=list)
+    comment_image_urls: list[str] = field(default_factory=list)
 
 
 def _escape_session_part(value: str) -> str:
@@ -199,6 +211,18 @@ def create_signed_params(path: str) -> dict[str, str | int]:
     }
 
 
+def _unique_strings(values: Iterable[Any]) -> list[str]:
+    return list(dict.fromkeys(_string(value) for value in values if _string(value)))
+
+
+def _decode_htmlish_text(value: Any) -> str:
+    text = str(value or "")
+    text = text.replace("\\u003c", "<").replace("\\u003C", "<")
+    text = text.replace("\\u003e", ">").replace("\\u003E", ">")
+    text = text.replace("\\u0026", "&")
+    return html.unescape(text)
+
+
 def _join_text_parts(parts: Iterable[str]) -> str:
     return "".join(part for part in parts if part)
 
@@ -252,11 +276,7 @@ def _extract_rich_text(value: Any) -> str:
 
 
 def strip_html(value: Any) -> str:
-    text = _extract_rich_text(value)
-    text = text.replace("\\u003c", "<").replace("\\u003C", "<")
-    text = text.replace("\\u003e", ">").replace("\\u003E", ">")
-    text = text.replace("\\u0026", "&")
-    text = html.unescape(text)
+    text = _decode_htmlish_text(_extract_rich_text(value))
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
     text = re.sub(r"</p\s*>", "\n", text, flags=re.I)
     text = re.sub(r"<[^>]+>", "", text)
@@ -266,6 +286,106 @@ def strip_html(value: Any) -> str:
     text = re.sub(r"\n[ \t]+", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def _is_http_url(value: Any) -> bool:
+    return bool(re.match(r"^https?://", _string(value), flags=re.I))
+
+
+def _extract_image_urls_from_html(value: Any) -> list[str]:
+    text = _decode_htmlish_text(value)
+    urls = []
+    pattern = re.compile(
+        r"<img\b[^>]*\b(?:data-original|data-src|src)=([\"'])(.*?)\1",
+        flags=re.I,
+    )
+    for match in pattern.finditer(text):
+        urls.append(match.group(2))
+    return _unique_strings(url for url in urls if _is_http_url(url))
+
+
+def extract_image_urls(value: Any) -> list[str]:
+    urls: list[str] = []
+
+    def visit(item: Any) -> None:
+        if item is None:
+            return
+        if isinstance(item, str):
+            text = _decode_htmlish_text(item)
+            if _is_http_url(text):
+                urls.append(text)
+            urls.extend(_extract_image_urls_from_html(text))
+            parsed = _parse_rich_text_json(text)
+            if parsed is not None:
+                visit(parsed)
+            return
+        if isinstance(item, list):
+            for child in item:
+                visit(child)
+            return
+        if isinstance(item, dict):
+            for key in (
+                "url",
+                "thumb",
+                "src",
+                "image",
+                "image_url",
+                "img_url",
+                "original",
+                "data_original",
+                "data-src",
+                "data-original",
+            ):
+                url = item.get(key)
+                if _is_http_url(url):
+                    urls.append(_string(url))
+
+            for key in (
+                "text",
+                "content",
+                "html",
+                "value",
+                "children",
+                "items",
+                "segments",
+                "spans",
+                "blocks",
+                "imgs",
+                "images",
+            ):
+                if key in item:
+                    visit(item.get(key))
+
+    visit(value)
+    return _unique_strings(urls)
+
+
+def extract_primary_image_urls(value: Any) -> list[str]:
+    if isinstance(value, list):
+        urls = []
+        for item in value:
+            if isinstance(item, dict):
+                url = item.get("url") or item.get("src") or item.get("image") or item.get("thumb")
+                if _is_http_url(url):
+                    urls.append(_string(url))
+                    continue
+            urls.extend(extract_image_urls(item))
+        return _unique_strings(urls)
+
+    if isinstance(value, dict):
+        url = value.get("url") or value.get("src") or value.get("image") or value.get("thumb")
+        if _is_http_url(url):
+            return [_string(url)]
+
+    return extract_image_urls(value)
+
+
+def _looks_like_xiaoheihe_image_url(value: Any) -> bool:
+    text = _string(value)
+    if not _is_http_url(text):
+        return False
+    host = urlparse(text).netloc.lower()
+    return host.endswith("max-c.com") or host.endswith("myqcloud.com")
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -460,6 +580,52 @@ def get_message_text(message: dict[str, Any]) -> str:
     )
 
 
+def get_message_rich_text(message: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "comment_a_text": message.get("comment_a_text"),
+        "comment_text": message.get("comment_text"),
+        "content": message.get("content"),
+        "text": message.get("text"),
+        "comment_b_text": message.get("comment_b_text"),
+    }
+
+
+def get_message_image_urls(message: dict[str, Any]) -> list[str]:
+    return extract_image_urls(
+        [
+            message.get("imgs"),
+            message.get("images"),
+            message.get("comment_a_imgs"),
+            message.get("comment_images"),
+            message.get("comment_a_text"),
+            message.get("comment_text"),
+            message.get("content"),
+        ],
+    )
+
+
+def get_comment_image_urls(comment: Any) -> list[str]:
+    comment = _as_dict(comment)
+    return extract_primary_image_urls(
+        [
+            comment.get("imgs"),
+            comment.get("images"),
+            comment.get("comment_imgs"),
+            comment.get("comment_images"),
+        ],
+    )
+
+
+def get_replied_image_urls(message: dict[str, Any]) -> list[str]:
+    return extract_image_urls(
+        [
+            message.get("comment_b_imgs"),
+            message.get("reply_imgs"),
+            message.get("comment_b_text"),
+        ],
+    )
+
+
 def get_notification_text(message: dict[str, Any]) -> str:
     return strip_html(message.get("text") or "")
 
@@ -522,13 +688,26 @@ def get_comment_line(comment: Any) -> str:
     return f"{user_name}: {text}" if text else ""
 
 
-def summarize_link_context(
+def get_link_image_urls(link: dict[str, Any]) -> list[str]:
+    return extract_image_urls(
+        [
+            link.get("imgs"),
+            link.get("thumbs"),
+            link.get("images"),
+            link.get("image"),
+            link.get("text"),
+            link.get("description"),
+        ],
+    )
+
+
+def summarize_link_context_data(
     data: dict[str, Any] | None,
     *,
     max_comment_lines: int = 8,
-) -> str:
+) -> LinkContext:
     if not data:
-        return ""
+        return LinkContext()
     result = _as_dict(data.get("result"))
     link = _as_dict(result.get("link"))
 
@@ -541,17 +720,50 @@ def summarize_link_context(
         parts.append(f"帖子内容：{content[:600]}")
 
     lines: list[str] = []
+    comment_image_urls: list[str] = []
     for group in normalize_comment_groups(data):
         comments = [_as_dict(group.get("root")), *_as_list(group.get("replies"))]
         for comment in comments:
-            line = get_comment_line(comment)
+            comment_dict = _as_dict(comment)
+            line = get_comment_line(comment_dict)
             if line:
                 lines.append(line)
+            comment_image_urls.extend(get_comment_image_urls(comment_dict))
 
     if lines:
         selected = lines[: max(1, int(max_comment_lines or 8))]
         parts.append("评论区摘要：\n" + "\n".join(selected))
-    return "\n\n".join(parts)
+
+    return LinkContext(
+        text="\n\n".join(parts),
+        rich_text={
+            "link_text": link.get("text"),
+            "link_description": link.get("description"),
+            "comments": [
+                {
+                    "id": get_comment_id(comment),
+                    "text": comment.get("text") or comment.get("content"),
+                    "imgs": comment.get("imgs"),
+                }
+                for group in normalize_comment_groups(data)
+                for comment in [_as_dict(group.get("root")), *_as_list(group.get("replies"))]
+                if isinstance(comment, dict)
+            ],
+        },
+        image_urls=get_link_image_urls(link),
+        comment_image_urls=_unique_strings(comment_image_urls),
+    )
+
+
+def summarize_link_context(
+    data: dict[str, Any] | None,
+    *,
+    max_comment_lines: int = 8,
+) -> str:
+    return summarize_link_context_data(
+        data,
+        max_comment_lines=max_comment_lines,
+    ).text
 
 
 def is_login_expired_response(data: Any) -> bool:
@@ -920,6 +1132,41 @@ class XiaoHeiHeClient:
             raise XiaoHeiHeClientError(api_error_message(data, "帖子详情查询失败"))
         return data
 
+    async def prepare_comment_image_urls(self, image_urls: Iterable[Any]) -> list[str]:
+        prepared: list[str] = []
+        for image_url in _unique_strings(image_urls):
+            if not _is_http_url(image_url):
+                continue
+            if _looks_like_xiaoheihe_image_url(image_url):
+                prepared.append(image_url)
+                continue
+            prepared.append(await self.copy_image_by_url(image_url))
+        return _unique_strings(prepared)
+
+    async def copy_image_by_url(self, image_url: str) -> str:
+        if not self.heybox_id:
+            raise XiaoHeiHeClientError("缺少 heybox_id")
+        image_url = _string(image_url)
+        if not _is_http_url(image_url):
+            raise XiaoHeiHeClientError(f"不支持的图片地址: {image_url!r}")
+
+        url = self.build_api_url(
+            IMAGE_COPY_BY_URL_API_PATH,
+            {
+                "heybox_id": self.heybox_id,
+                "target_url": image_url,
+                "watermark": "false",
+            },
+        )
+        data = await self._request_json("GET", url)
+        if data.get("status") != "ok":
+            raise XiaoHeiHeClientError(api_error_message(data, "图片转存失败"))
+        result = _as_dict(data.get("result"))
+        copied_url = _string(result.get("url") or result.get("preview_url"))
+        if not copied_url:
+            raise XiaoHeiHeClientError("图片转存响应缺少 url")
+        return copied_url
+
     async def submit_comment(
         self,
         link_id: str,
@@ -927,6 +1174,7 @@ class XiaoHeiHeClient:
         root_id: str,
         text: str,
         *,
+        image_urls: Iterable[Any] | None = None,
         cooldown_seconds: int = 30,
     ) -> dict[str, Any]:
         if not self.heybox_id:
@@ -935,10 +1183,11 @@ class XiaoHeiHeClient:
         reply_id = _string(reply_id)
         root_id = _string(root_id) or reply_id
         text = _string(text)
+        prepared_image_urls = await self.prepare_comment_image_urls(image_urls or [])
         if not link_id or not reply_id:
             raise XiaoHeiHeClientError("缺少 link_id 或 reply_id，无法评论回复")
-        if not text:
-            raise XiaoHeiHeClientError("回复文本为空，已取消发送")
+        if not text and not prepared_image_urls:
+            raise XiaoHeiHeClientError("回复内容为空，已取消发送")
 
         async with self._send_lock:
             cooldown = max(0, int(cooldown_seconds or 0))
@@ -960,6 +1209,8 @@ class XiaoHeiHeClient:
                 "root_id": root_id,
                 "text": text,
             }
+            if prepared_image_urls:
+                body["imgs"] = ";".join(prepared_image_urls)
             data = await self._request_json(
                 "POST",
                 url,
@@ -976,6 +1227,7 @@ class XiaoHeiHeClient:
         session_id: str,
         text: str,
         *,
+        image_urls: Iterable[Any] | None = None,
         cooldown_seconds: int = 30,
     ) -> dict[str, Any]:
         target = ReplyTarget.from_session_id(session_id)
@@ -984,6 +1236,7 @@ class XiaoHeiHeClient:
             target.reply_id,
             target.root_id,
             text,
+            image_urls=image_urls,
             cooldown_seconds=cooldown_seconds,
         )
 
@@ -1027,5 +1280,8 @@ class XiaoHeiHeClient:
             link_title=get_link_title(message),
             notification_text=get_notification_text(message),
             replied_text=get_replied_text(message),
+            rich_text=get_message_rich_text(message),
+            image_urls=get_message_image_urls(message),
+            replied_image_urls=get_replied_image_urls(message),
             raw=message,
         )
