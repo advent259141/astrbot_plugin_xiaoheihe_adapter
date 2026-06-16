@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from astrbot.api.event import AstrMessageEvent, MessageChain
@@ -74,9 +75,18 @@ class XiaoHeiHeMessageEvent(AstrMessageEvent):
         for comp in message.chain:
             if not isinstance(comp, Image):
                 continue
-            url = _first_text(getattr(comp, "url", ""), getattr(comp, "file", ""))
-            if url.startswith(("http://", "https://")):
-                urls.append(url)
+            for value in (getattr(comp, "url", ""), getattr(comp, "file", "")):
+                url = _first_text(value)
+                if not url:
+                    continue
+                if url.startswith(("http://", "https://", "file://")):
+                    urls.append(url)
+                    continue
+                try:
+                    if Path(url).expanduser().is_file():
+                        urls.append(url)
+                except OSError:
+                    continue
         return list(dict.fromkeys(urls))
 
 

@@ -8,7 +8,7 @@
 - 清洗小黑盒富文本中的 HTML、@用户和表情文本。
 - 读取帖子正文、评论区和回复中的图片，并作为 AstrBot `Image` 组件传入事件。
 - 回复文本评论。
-- 回复 HTTP 图片：插件会先调用小黑盒图片转存接口，再按网页端评论格式发送图片评论。
+- 回复图片：HTTP/HTTPS 图片会先调用小黑盒转存接口，本地图片文件会按网页端流程直传小黑盒 COS，再按评论图片格式发送。
 
 ## 登录
 
@@ -41,12 +41,14 @@
 - `GET /bbs/app/user/message` 拉取通知消息。
 - `GET /bbs/app/link/tree` 获取帖子和评论上下文。
 - `POST /bbs/app/api/qcloud/cos/copy/image/by/url` 转存待发送的 HTTP 图片。
+- `POST /bbs/app/api/qcloud/cos/upload/info/v2`、`upload/token/v2`、`upload/callback/v2` 申请本地图片上传 key、临时凭证和回调预览地址。
+- `PUT https://<bucket>.cos.<region>.myqcloud.com/<key>` 直传本地图片文件到小黑盒 COS。
 - `POST /bbs/app/comment/create` 发送评论回复。
 - 消息查询、帖子详情、评论发送等业务 API 会带 `hkey`、`_time`、`nonce` 签名参数；扫码登录的 QR 接口按网页原始请求只带轻量参数。
 
 ## 限制
 
-- 图片发送目前支持 AstrBot `Image` 组件里的 HTTP/HTTPS URL；本地文件直传小黑盒 COS 尚未接入。
+- 图片发送支持 AstrBot `Image` 组件里的 HTTP/HTTPS URL、`file://` URL 和本地图片路径；本地直传目前覆盖 PNG、JPG/JPEG、GIF、WebP、BMP。
 - 语音、视频、文件会转成占位文本。
 - 这是网页登录态模拟，不是官方 Bot API，账号风控风险需要自行承担。
 - 登录态过期后需要重新扫码。

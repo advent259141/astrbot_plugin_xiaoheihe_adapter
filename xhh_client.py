@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import html
 import json
+import mimetypes
 import random
 import re
+import struct
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from http.cookies import SimpleCookie
+from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlparse
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse
 
 import aiohttp
 
@@ -22,8 +26,20 @@ MESSAGE_API_PATH = "/bbs/app/user/message"
 LINK_TREE_API_PATH = "/bbs/app/link/tree"
 COMMENT_CREATE_API_PATH = "/bbs/app/comment/create"
 IMAGE_COPY_BY_URL_API_PATH = "/bbs/app/api/qcloud/cos/copy/image/by/url"
+COS_UPLOAD_INFO_API_PATH = "/bbs/app/api/qcloud/cos/upload/info/v2"
+COS_UPLOAD_TOKEN_API_PATH = "/bbs/app/api/qcloud/cos/upload/token/v2"
+COS_UPLOAD_CALLBACK_API_PATH = "/bbs/app/api/qcloud/cos/upload/callback/v2"
 QRCODE_URL_API_PATH = "/account/get_qrcode_url/"
 QR_STATE_API_PATH = "/account/qr_state/"
+DEFAULT_COS_REGION = "ap-shanghai"
+LOCAL_IMAGE_EXTENSIONS = {
+    ".bmp",
+    ".gif",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".webp",
+}
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -128,6 +144,17 @@ class LinkContext:
     rich_text: dict[str, Any] = field(default_factory=dict)
     image_urls: list[str] = field(default_factory=list)
     comment_image_urls: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class LocalImageInfo:
+    path: Path
+    name: str
+    mimetype: str
+    size: int
+    width: int = 0
+    height: int = 0
+    duration: int = 0
 
 
 def _escape_session_part(value: str) -> str:
@@ -290,6 +317,238 @@ def strip_html(value: Any) -> str:
 
 def _is_http_url(value: Any) -> bool:
     return bool(re.match(r"^https?://", _string(value), flags=re.I))
+
+
+def _is_file_url(value: Any) -> bool:
+    return urlparse(_string(value)).scheme.lower() == "file"
+
+
+def _local_path_from_value(value: Any) -> Path | None:
+    text = _string(value)
+    if not text or _is_http_url(text):
+        return None
+
+    if _is_file_url(text):
+        parsed = urlparse(text)
+        raw_path = unquote(parsed.path or "")
+        if parsed.netloc and raw_path:
+            raw_path = f"//{parsed.netloc}{raw_path}"
+        elif parsed.netloc:
+            raw_path = parsed.netloc
+        if re.match(r"^/[A-Za-z]:/", raw_path):
+            raw_path = raw_path[1:]
+        if not raw_path:
+            return None
+        path = Path(raw_path)
+    else:
+        path = Path(text)
+
+    try:
+        return path.expanduser()
+    except Exception:
+        return path
+
+
+def _looks_like_local_image_path(value: Any) -> bool:
+    path = _local_path_from_value(value)
+    if path is None:
+        return False
+    return path.suffix.lower() in LOCAL_IMAGE_EXTENSIONS
+
+
+def _read_png_dimensions(data: bytes) -> tuple[int, int]:
+    if len(data) >= 24 and data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return struct.unpack(">II", data[16:24])
+    return 0, 0
+
+
+def _read_gif_dimensions(data: bytes) -> tuple[int, int]:
+    if len(data) >= 10 and data[:6] in (b"GIF87a", b"GIF89a"):
+        return struct.unpack("<HH", data[6:10])
+    return 0, 0
+
+
+def _read_bmp_dimensions(data: bytes) -> tuple[int, int]:
+    if len(data) >= 26 and data.startswith(b"BM"):
+        width = struct.unpack("<I", data[18:22])[0]
+        height = abs(struct.unpack("<i", data[22:26])[0])
+        return width, height
+    return 0, 0
+
+
+def _read_webp_dimensions(data: bytes) -> tuple[int, int]:
+    if len(data) < 30 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+        return 0, 0
+    chunk = data[12:16]
+    if chunk == b"VP8 " and len(data) >= 30:
+        if data[23:26] == b"\x9d\x01\x2a":
+            width = struct.unpack("<H", data[26:28])[0] & 0x3FFF
+            height = struct.unpack("<H", data[28:30])[0] & 0x3FFF
+            return width, height
+    if chunk == b"VP8L" and len(data) >= 25:
+        b0, b1, b2, b3 = data[21], data[22], data[23], data[24]
+        width = 1 + (((b1 & 0x3F) << 8) | b0)
+        height = 1 + (((b3 & 0x0F) << 10) | (b2 << 2) | ((b1 & 0xC0) >> 6))
+        return width, height
+    if chunk == b"VP8X" and len(data) >= 30:
+        width = 1 + int.from_bytes(data[24:27], "little")
+        height = 1 + int.from_bytes(data[27:30], "little")
+        return width, height
+    return 0, 0
+
+
+def _read_jpeg_dimensions(data: bytes) -> tuple[int, int]:
+    if len(data) < 4 or not data.startswith(b"\xff\xd8"):
+        return 0, 0
+
+    index = 2
+    while index + 9 <= len(data):
+        if data[index] != 0xFF:
+            index += 1
+            continue
+        while index < len(data) and data[index] == 0xFF:
+            index += 1
+        if index >= len(data):
+            break
+
+        marker = data[index]
+        index += 1
+        if marker in {0xD8, 0xD9} or 0xD0 <= marker <= 0xD7:
+            continue
+        if index + 2 > len(data):
+            break
+        segment_length = struct.unpack(">H", data[index : index + 2])[0]
+        if segment_length < 2 or index + segment_length > len(data):
+            break
+        if marker in {
+            0xC0,
+            0xC1,
+            0xC2,
+            0xC3,
+            0xC5,
+            0xC6,
+            0xC7,
+            0xC9,
+            0xCA,
+            0xCB,
+            0xCD,
+            0xCE,
+            0xCF,
+        } and segment_length >= 7:
+            height = struct.unpack(">H", data[index + 3 : index + 5])[0]
+            width = struct.unpack(">H", data[index + 5 : index + 7])[0]
+            return width, height
+        index += segment_length
+    return 0, 0
+
+
+def _read_image_dimensions(path: Path) -> tuple[int, int]:
+    try:
+        with path.open("rb") as fp:
+            data = fp.read(512 * 1024)
+    except OSError:
+        return 0, 0
+
+    for reader in (
+        _read_png_dimensions,
+        _read_jpeg_dimensions,
+        _read_gif_dimensions,
+        _read_webp_dimensions,
+        _read_bmp_dimensions,
+    ):
+        width, height = reader(data)
+        if width > 0 and height > 0:
+            return width, height
+    return 0, 0
+
+
+def _get_local_image_info(value: Any) -> LocalImageInfo:
+    path = _local_path_from_value(value)
+    if path is None:
+        raise XiaoHeiHeClientError(f"不支持的图片地址: {_string(value)!r}")
+    try:
+        path = path.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise XiaoHeiHeClientError(f"本地图片不存在: {path}") from exc
+    except OSError as exc:
+        raise XiaoHeiHeClientError(f"无法读取本地图片路径: {path}") from exc
+    if not path.is_file():
+        raise XiaoHeiHeClientError(f"本地图片不是文件: {path}")
+
+    stat = path.stat()
+    mimetype = mimetypes.guess_type(str(path))[0] or ""
+    if not mimetype.startswith("image/"):
+        raise XiaoHeiHeClientError(f"不支持的本地图片类型: {path.name}")
+    width, height = _read_image_dimensions(path)
+    return LocalImageInfo(
+        path=path,
+        name=path.name,
+        mimetype=mimetype,
+        size=stat.st_size,
+        width=width,
+        height=height,
+    )
+
+
+def _cos_quote(value: str) -> str:
+    return quote(value, safe="/-_.~")
+
+
+def _hmac_sha1(key: bytes, value: str) -> str:
+    return hmac.new(key, value.encode("utf-8"), hashlib.sha1).hexdigest()
+
+
+def _cos_authorization(
+    *,
+    secret_id: str,
+    secret_key: str,
+    method: str,
+    path: str,
+    headers: dict[str, str],
+    start_time: int,
+    end_time: int,
+) -> str:
+    method_lower = method.lower()
+    key_time = f"{start_time};{end_time}"
+    header_items = {
+        key.lower(): " ".join(str(value).strip().split())
+        for key, value in headers.items()
+        if str(value).strip()
+    }
+    sorted_header_keys = sorted(header_items)
+    signed_headers = ";".join(sorted_header_keys)
+    http_headers = "&".join(
+        f"{quote(key, safe='-_.~')}={quote(header_items[key], safe='-_.~')}"
+        for key in sorted_header_keys
+    )
+    http_string = "\n".join(
+        [
+            method_lower,
+            _cos_quote(path),
+            "",
+            http_headers,
+            "",
+        ],
+    )
+    sign_key = _hmac_sha1(secret_key.encode("utf-8"), key_time)
+    string_to_sign = "\n".join(
+        [
+            "sha1",
+            key_time,
+            hashlib.sha1(http_string.encode("utf-8")).hexdigest(),
+            "",
+        ],
+    )
+    signature = _hmac_sha1(sign_key.encode("utf-8"), string_to_sign)
+    return (
+        "q-sign-algorithm=sha1&"
+        f"q-ak={secret_id}&"
+        f"q-sign-time={key_time}&"
+        f"q-key-time={key_time}&"
+        f"q-header-list={signed_headers}&"
+        "q-url-param-list=&"
+        f"q-signature={signature}"
+    )
 
 
 def _extract_image_urls_from_html(value: Any) -> list[str]:
@@ -1132,15 +1391,25 @@ class XiaoHeiHeClient:
             raise XiaoHeiHeClientError(api_error_message(data, "帖子详情查询失败"))
         return data
 
+    def _form_headers(self) -> dict[str, str]:
+        return {
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            "Origin": WEB_ORIGIN,
+            "Referer": f"{WEB_ORIGIN}/",
+        }
+
     async def prepare_comment_image_urls(self, image_urls: Iterable[Any]) -> list[str]:
         prepared: list[str] = []
         for image_url in _unique_strings(image_urls):
-            if not _is_http_url(image_url):
+            if _is_http_url(image_url):
+                if _looks_like_xiaoheihe_image_url(image_url):
+                    prepared.append(image_url)
+                    continue
+                prepared.append(await self.copy_image_by_url(image_url))
                 continue
-            if _looks_like_xiaoheihe_image_url(image_url):
-                prepared.append(image_url)
-                continue
-            prepared.append(await self.copy_image_by_url(image_url))
+            if _looks_like_local_image_path(image_url):
+                prepared.append(await self.upload_local_image_to_cos(image_url))
         return _unique_strings(prepared)
 
     async def copy_image_by_url(self, image_url: str) -> str:
@@ -1166,6 +1435,172 @@ class XiaoHeiHeClient:
         if not copied_url:
             raise XiaoHeiHeClientError("图片转存响应缺少 url")
         return copied_url
+
+    async def upload_local_image_to_cos(self, image_path: Any) -> str:
+        if not self.heybox_id:
+            raise XiaoHeiHeClientError("缺少 heybox_id")
+
+        image = _get_local_image_info(image_path)
+        upload_info = await self._request_cos_upload_info(image)
+        keys = _as_list(upload_info.get("keys"))
+        key = _string(keys[0] if keys else upload_info.get("key"))
+        bucket = _string(upload_info.get("bucket"))
+        region = _string(upload_info.get("region")) or DEFAULT_COS_REGION
+        if not key or not bucket:
+            raise XiaoHeiHeClientError("图片上传初始化响应缺少 bucket 或 key")
+
+        token = await self._request_cos_upload_token(
+            bucket=bucket,
+            keys=[key],
+            mimetypes=[image.mimetype],
+        )
+        await self._put_cos_object(
+            image=image,
+            bucket=bucket,
+            region=region,
+            key=key,
+            token=token,
+        )
+        return await self._finish_cos_upload([key])
+
+    async def _request_cos_upload_info(self, image: LocalImageInfo) -> dict[str, Any]:
+        file_info = {
+            "name": image.name,
+            "mimetype": image.mimetype,
+            "fsize": image.size,
+            "width": image.width,
+            "height": image.height,
+            "duration": image.duration,
+        }
+        body = urlencode(
+            {
+                "file_infos": json.dumps([file_info], ensure_ascii=False, separators=(",", ":")),
+                "scope": "bbs",
+                "need_cache": "0",
+            },
+        )
+        data = await self._request_json(
+            "POST",
+            self.build_api_url(COS_UPLOAD_INFO_API_PATH, {"heybox_id": self.heybox_id}),
+            data=body,
+            headers=self._form_headers(),
+        )
+        if data.get("status") != "ok":
+            raise XiaoHeiHeClientError(api_error_message(data, "图片上传初始化失败"))
+        return _as_dict(data.get("result"))
+
+    async def _request_cos_upload_token(
+        self,
+        *,
+        bucket: str,
+        keys: list[str],
+        mimetypes: list[str],
+    ) -> dict[str, Any]:
+        body = urlencode(
+            {
+                "bucket": bucket,
+                "keys": json.dumps(keys, ensure_ascii=False, separators=(",", ":")),
+                "mimetypes": json.dumps(mimetypes, ensure_ascii=False, separators=(",", ":")),
+                "is_multipart_upload": "0",
+            },
+        )
+        data = await self._request_json(
+            "POST",
+            self.build_api_url(COS_UPLOAD_TOKEN_API_PATH, {"heybox_id": self.heybox_id}),
+            data=body,
+            headers=self._form_headers(),
+        )
+        if data.get("status") != "ok":
+            raise XiaoHeiHeClientError(api_error_message(data, "图片上传授权失败"))
+        result = _as_dict(data.get("result"))
+        credentials = _as_dict(result.get("credentials"))
+        if not (
+            _string(credentials.get("tmpSecretId"))
+            and _string(credentials.get("tmpSecretKey"))
+            and _string(credentials.get("sessionToken"))
+        ):
+            raise XiaoHeiHeClientError("图片上传授权响应缺少临时凭证")
+        return result
+
+    async def _put_cos_object(
+        self,
+        *,
+        image: LocalImageInfo,
+        bucket: str,
+        region: str,
+        key: str,
+        token: dict[str, Any],
+    ) -> None:
+        credentials = _as_dict(token.get("credentials"))
+        secret_id = _string(credentials.get("tmpSecretId"))
+        secret_key = _string(credentials.get("tmpSecretKey"))
+        session_token = _string(credentials.get("sessionToken"))
+        if not secret_id or not secret_key or not session_token:
+            raise XiaoHeiHeClientError("图片上传授权响应缺少临时凭证")
+
+        now = int(time.time())
+        start_time = int(_number(token.get("startTime")) or max(0, now - 60))
+        end_time = int(_number(token.get("expiredTime")) or (now + 300))
+        host = f"{bucket}.cos.{region}.myqcloud.com"
+        object_path = "/" + key.lstrip("/")
+        headers = {
+            "Host": host,
+            "Content-Type": image.mimetype,
+            "x-cos-security-token": session_token,
+        }
+        headers["Authorization"] = _cos_authorization(
+            secret_id=secret_id,
+            secret_key=secret_key,
+            method="PUT",
+            path=object_path,
+            headers=headers,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        url = f"https://{host}{_cos_quote(object_path)}"
+        try:
+            payload = image.path.read_bytes()
+        except OSError as exc:
+            raise XiaoHeiHeClientError(f"读取本地图片失败: {image.path}") from exc
+
+        timeout = aiohttp.ClientTimeout(total=max(self.timeout, 30))
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.put(url, data=payload, headers=headers) as response:
+                if response.status >= 400:
+                    text = await response.text()
+                    raise XiaoHeiHeClientError(
+                        f"COS 图片上传失败: HTTP {response.status}, {text[:200]}",
+                    )
+
+    async def _finish_cos_upload(self, keys: list[str]) -> str:
+        body = urlencode(
+            {
+                "keys": json.dumps(keys, ensure_ascii=False, separators=(",", ":")),
+            },
+        )
+        data = await self._request_json(
+            "POST",
+            self.build_api_url(
+                COS_UPLOAD_CALLBACK_API_PATH,
+                {
+                    "heybox_id": self.heybox_id,
+                    "is_finished": "true",
+                },
+            ),
+            data=body,
+            headers=self._form_headers(),
+        )
+        if data.get("status") != "ok":
+            raise XiaoHeiHeClientError(api_error_message(data, "图片上传回调失败"))
+        result = _as_dict(data.get("result"))
+        preview_urls = _as_list(result.get("preview_urls"))
+        thumbs = _as_list(result.get("thumbs"))
+        image_url = _string(preview_urls[0] if preview_urls else "")
+        if not image_url:
+            image_url = _string(thumbs[0] if thumbs else "")
+        if not image_url:
+            raise XiaoHeiHeClientError("图片上传回调响应缺少 preview_url")
+        return image_url
 
     async def submit_comment(
         self,
@@ -1196,12 +1631,6 @@ class XiaoHeiHeClient:
                 await asyncio.sleep(cooldown - elapsed)
 
             url = self.build_api_url(COMMENT_CREATE_API_PATH, {"heybox_id": self.heybox_id})
-            headers = {
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-                "Origin": WEB_ORIGIN,
-                "Referer": f"{WEB_ORIGIN}/",
-            }
             body = {
                 "is_cy": "0",
                 "link_id": link_id,
@@ -1215,7 +1644,7 @@ class XiaoHeiHeClient:
                 "POST",
                 url,
                 data=urlencode(body),
-                headers=headers,
+                headers=self._form_headers(),
             )
             if data.get("status") != "ok":
                 raise XiaoHeiHeClientError(api_error_message(data, "评论发送失败"))
