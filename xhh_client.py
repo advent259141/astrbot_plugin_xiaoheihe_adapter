@@ -199,12 +199,72 @@ def create_signed_params(path: str) -> dict[str, str | int]:
     }
 
 
+def _join_text_parts(parts: Iterable[str]) -> str:
+    return "".join(part for part in parts if part)
+
+
+def _parse_rich_text_json(value: str) -> Any:
+    text = value.strip()
+    if not text or text[0] not in "[{":
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        return None
+
+
+def _extract_rich_text(value: Any) -> str:
+    if value is None:
+        return ""
+
+    if isinstance(value, str):
+        parsed = _parse_rich_text_json(value)
+        if parsed is not None:
+            extracted = _extract_rich_text(parsed)
+            if extracted:
+                return extracted
+        return value
+
+    if isinstance(value, list):
+        return _join_text_parts(_extract_rich_text(item) for item in value)
+
+    if isinstance(value, dict):
+        for key in ("text", "content", "value", "description", "desc"):
+            if key in value:
+                text = _extract_rich_text(value.get(key))
+                if text:
+                    return text
+
+        user = value.get("user") or value.get("target_user") or value.get("mention_user")
+        user_name = get_user_display_name(user)
+        if user_name:
+            return user_name if user_name.startswith("@") else f"@{user_name}"
+
+        for key in ("children", "items", "segments", "spans", "blocks"):
+            if key in value:
+                text = _extract_rich_text(value.get(key))
+                if text:
+                    return text
+
+        return ""
+
+    return str(value)
+
+
 def strip_html(value: Any) -> str:
-    text = str(value or "")
+    text = _extract_rich_text(value)
+    text = text.replace("\\u003c", "<").replace("\\u003C", "<")
+    text = text.replace("\\u003e", ">").replace("\\u003E", ">")
+    text = text.replace("\\u0026", "&")
+    text = html.unescape(text)
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
+    text = re.sub(r"</p\s*>", "\n", text, flags=re.I)
     text = re.sub(r"<[^>]+>", "", text)
     text = html.unescape(text)
     text = re.sub(r"\[cube_([^\]]+)\]", r"[\1]", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
