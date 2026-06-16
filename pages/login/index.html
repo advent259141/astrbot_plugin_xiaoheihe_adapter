@@ -294,16 +294,13 @@
       let currentQr = "";
       let currentQrUrl = "";
 
-      function switchPage(pageName) {
+      async function switchPage(pageName) {
         if (!pageName || pageName === "login") return;
         stopTimer();
-        const context = bridge?.getContext?.() || {};
-        const pluginName = context.pluginName || "astrbot_plugin_xiaoheihe_adapter";
-        const theme = context.isDark ? "dark" : "light";
-        const target =
-          `/api/plugin/page/content/${encodeURIComponent(pluginName)}/${encodeURIComponent(pageName)}/` +
-          `?theme=${encodeURIComponent(theme)}`;
-        window.location.href = target;
+        const data = await bridge.apiGet(`page/${pageName}`);
+        if (data?.content_path) {
+          window.location.href = data.content_path;
+        }
       }
 
       function setState(text, kind = "") {

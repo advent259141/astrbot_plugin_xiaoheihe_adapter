@@ -28,6 +28,12 @@ class XiaoHeiHeAdapterPlugin(Star):
             "XiaoHeiHe adapter status",
         )
         context.register_web_api(
+            f"/{PLUGIN_NAME}/page/<page_name>",
+            self.page_entry,
+            ["GET"],
+            "XiaoHeiHe plugin page entry",
+        )
+        context.register_web_api(
             f"/{PLUGIN_NAME}/login/start",
             self.login_start,
             ["POST"],
@@ -82,6 +88,26 @@ class XiaoHeiHeAdapterPlugin(Star):
                 "instances": instances,
             },
         )
+
+    async def page_entry(self, page_name: str):
+        page_name = str(page_name or "").strip()
+        if page_name not in {"login", "status"}:
+            return error_response("unknown page", status_code=404)
+
+        try:
+            raw_request = request._request
+            page_service = raw_request.app.state.services.plugin_pages
+            locale = _request_locale()
+            return json_response(
+                await page_service.get_plugin_page_entry_config(
+                    plugin_name=request.plugin_name or PLUGIN_NAME,
+                    page_name=page_name,
+                    username=request.username,
+                    locale=locale,
+                ),
+            )
+        except Exception as exc:
+            return error_response(str(exc), status_code=500)
 
     async def login_start(self):
         await self._close_login_client()
@@ -162,6 +188,12 @@ def _saved_login_status(*, show_sensitive: bool = False) -> dict[str, Any]:
     from .xhh_session import public_session_status
 
     return public_session_status(show_sensitive=show_sensitive)
+
+
+def _request_locale(default: str = "zh-CN") -> str:
+    raw = str(request.headers.get("Accept-Language", "") or "").strip()
+    locale = raw.split(",", 1)[0].split(";", 1)[0].strip()
+    return locale if 0 < len(locale) <= 32 else default
 
 
 def _public_login_result(saved: dict[str, Any]) -> dict[str, Any]:
