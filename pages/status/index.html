@@ -270,10 +270,13 @@
 
       function switchPage(pageName) {
         if (!pageName || pageName === "status") return;
-        const pluginName =
-          bridge?.getContext?.()?.pluginName || "astrbot_plugin_xiaoheihe_adapter";
-        const target = `/plugin-page/${encodeURIComponent(pluginName)}/${encodeURIComponent(pageName)}`;
-        window.parent.location.href = target;
+        const context = bridge?.getContext?.() || {};
+        const pluginName = context.pluginName || "astrbot_plugin_xiaoheihe_adapter";
+        const theme = context.isDark ? "dark" : "light";
+        const target =
+          `/api/plugin/page/content/${encodeURIComponent(pluginName)}/${encodeURIComponent(pageName)}/` +
+          `?theme=${encodeURIComponent(theme)}`;
+        window.location.href = target;
       }
 
       function formatTime(value) {
