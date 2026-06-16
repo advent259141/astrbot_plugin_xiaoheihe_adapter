@@ -58,6 +58,14 @@
         margin-bottom: 18px;
       }
 
+      .title-group,
+      .toolbar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
       h1 {
         margin: 0;
         font-size: 24px;
@@ -78,6 +86,27 @@
       button:hover {
         border-color: var(--accent);
         color: var(--accent);
+      }
+
+      .tabs {
+        display: inline-flex;
+        gap: 4px;
+        padding: 3px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+
+      .tab {
+        height: 28px;
+        border: 0;
+        border-radius: 5px;
+        padding: 0 10px;
+      }
+
+      .tab.active {
+        background: var(--accent);
+        color: #fff;
       }
 
       .summary {
@@ -212,8 +241,16 @@
   <body>
     <main>
       <header>
-        <h1 id="heading">小黑盒适配器状态</h1>
-        <button id="refresh" type="button">刷新</button>
+        <div class="title-group">
+          <h1 id="heading">小黑盒适配器状态</h1>
+          <nav class="tabs" aria-label="页面切换">
+            <button class="tab" type="button" data-page="login">登录</button>
+            <button class="tab active" type="button" data-page="status">状态</button>
+          </nav>
+        </div>
+        <div class="toolbar">
+          <button id="refresh" type="button">刷新</button>
+        </div>
       </header>
       <section class="summary" id="summary"></section>
       <section class="instances" id="instances"></section>
@@ -225,9 +262,18 @@
       const refresh = document.getElementById("refresh");
       const summary = document.getElementById("summary");
       const instances = document.getElementById("instances");
+      const pageButtons = document.querySelectorAll("[data-page]");
 
       function t(key, fallback) {
         return bridge?.t ? bridge.t(key, fallback) : fallback;
+      }
+
+      function switchPage(pageName) {
+        if (!pageName || pageName === "status") return;
+        const pluginName =
+          bridge?.getContext?.()?.pluginName || "astrbot_plugin_xiaoheihe_adapter";
+        const target = `/plugin-page/${encodeURIComponent(pluginName)}/${encodeURIComponent(pageName)}`;
+        window.parent.location.href = target;
       }
 
       function formatTime(value) {
@@ -353,6 +399,9 @@
       }
 
       await bridge.ready();
+      pageButtons.forEach((button) => {
+        button.addEventListener("click", () => switchPage(button.dataset.page));
+      });
       function renderText() {
         heading.textContent = t("pages.status.heading", "小黑盒适配器状态");
         refresh.textContent = t("pages.status.refresh", "刷新");

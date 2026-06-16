@@ -58,6 +58,13 @@
         margin-bottom: 16px;
       }
 
+      .title-group {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
       h1 {
         margin: 0;
         font-size: 24px;
@@ -127,6 +134,27 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
+      }
+
+      .tabs {
+        display: inline-flex;
+        gap: 4px;
+        padding: 3px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+
+      .tab {
+        height: 28px;
+        border: 0;
+        border-radius: 5px;
+        padding: 0 10px;
+      }
+
+      .tab.active {
+        background: var(--accent);
+        color: #fff;
       }
 
       button.primary {
@@ -219,7 +247,13 @@
   <body>
     <main>
       <header>
-        <h1>小黑盒扫码登录</h1>
+        <div class="title-group">
+          <h1>小黑盒扫码登录</h1>
+          <nav class="tabs" aria-label="页面切换">
+            <button class="tab active" type="button" data-page="login">登录</button>
+            <button class="tab" type="button" data-page="status">状态</button>
+          </nav>
+        </div>
         <span id="state" class="status">未开始</span>
       </header>
 
@@ -254,10 +288,20 @@
       const start = document.getElementById("start");
       const copy = document.getElementById("copy");
       const clear = document.getElementById("clear");
+      const pageButtons = document.querySelectorAll("[data-page]");
 
       let timer = null;
       let currentQr = "";
       let currentQrUrl = "";
+
+      function switchPage(pageName) {
+        if (!pageName || pageName === "login") return;
+        stopTimer();
+        const pluginName =
+          bridge?.getContext?.()?.pluginName || "astrbot_plugin_xiaoheihe_adapter";
+        const target = `/plugin-page/${encodeURIComponent(pluginName)}/${encodeURIComponent(pageName)}`;
+        window.parent.location.href = target;
+      }
 
       function setState(text, kind = "") {
         state.textContent = text;
@@ -400,6 +444,9 @@
       }
 
       await bridge.ready();
+      pageButtons.forEach((button) => {
+        button.addEventListener("click", () => switchPage(button.dataset.page));
+      });
       start.addEventListener("click", startLogin);
       copy.addEventListener("click", copyLink);
       clear.addEventListener("click", clearSession);
