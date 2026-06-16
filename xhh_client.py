@@ -589,35 +589,13 @@ class XiaoHeiHeClient:
         return f"{API_ORIGIN}{path}?{urlencode(query_params)}"
 
     def build_login_url(self, path: str, params: dict[str, Any] | None = None) -> str:
-        query_params: dict[str, Any] = {
-            "os_type": "web",
-            "app": "web",
-            "client_type": "web",
-            "version": "999.0.4",
-            "web_version": "2.5",
-            "x_client_type": "web",
-            "x_app": "heybox_website",
-            "heybox_id": "",
-            "x_os_type": "Windows",
-            "device_info": "Chrome",
-            "device_id": self.device_id,
-        }
-        for key in (
-            "version",
-            "web_version",
-            "x_client_type",
-            "x_app",
-            "x_os_type",
-            "device_info",
-            "device_id",
-        ):
-            if _string(self.api_params.get(key)):
-                query_params[key] = self.api_params[key]
+        query_params: dict[str, Any] = {}
         if params:
             query_params.update(
                 {key: value for key, value in params.items() if value is not None},
             )
-        query_params.update(create_signed_params(path))
+        if not query_params:
+            return f"{API_ORIGIN}{path}"
         return f"{API_ORIGIN}{path}?{urlencode(query_params)}"
 
     async def _request_json(

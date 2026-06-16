@@ -1,0 +1,34 @@
+{
+  "metadata": {
+    "display_name": "小黑盒适配器",
+    "short_desc": "小黑盒平台适配器",
+    "desc": "以网页登录态轮询小黑盒消息，并通过评论接口回复的 AstrBot 平台适配器。"
+  },
+  "config": {
+    "status_page_enabled": {
+      "description": "启用状态页",
+      "hint": "是否在插件详情中提供小黑盒适配器运行状态页和扫码登录页。"
+    },
+    "show_sensitive_status": {
+      "description": "显示敏感状态",
+      "hint": "状态页是否显示 heybox_id、device_id、Cookie 等调试信息。默认关闭。"
+    },
+    "login_request_timeout": {
+      "description": "扫码登录请求超时",
+      "hint": "插件登录页创建二维码和轮询扫码状态的请求超时秒数。"
+    }
+  },
+  "pages": {
+    "login": {
+      "title": "扫码登录",
+      "description": "用小黑盒 App 扫码并保存网页登录态。"
+    },
+    "status": {
+      "title": "运行状态",
+      "description": "查看小黑盒适配器轮询、去重、发送与最近错误状态。",
+      "heading": "小黑盒适配器状态",
+      "refresh": "刷新",
+      "empty": "当前没有运行中的小黑盒平台实例。"
+    }
+  }
+}

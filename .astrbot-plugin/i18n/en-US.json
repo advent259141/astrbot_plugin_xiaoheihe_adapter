@@ -1,0 +1,34 @@
+{
+  "metadata": {
+    "display_name": "XiaoHeiHe Adapter",
+    "short_desc": "XiaoHeiHe platform adapter",
+    "desc": "An AstrBot platform adapter that polls XiaoHeiHe web messages and replies through the comment API."
+  },
+  "config": {
+    "status_page_enabled": {
+      "description": "Enable status page",
+      "hint": "Expose a runtime status page in the plugin detail view."
+    },
+    "show_sensitive_status": {
+      "description": "Show sensitive status",
+      "hint": "Show heybox_id, device_id and Cookie for debugging. Disabled by default."
+    },
+    "login_request_timeout": {
+      "description": "QR login request timeout",
+      "hint": "Timeout in seconds for creating QR codes and polling QR login status."
+    }
+  },
+  "pages": {
+    "login": {
+      "title": "QR Login",
+      "description": "Scan with the XiaoHeiHe app and save the web login session."
+    },
+    "status": {
+      "title": "Status",
+      "description": "View XiaoHeiHe adapter polling, deduplication, send, and error status.",
+      "heading": "XiaoHeiHe Adapter Status",
+      "refresh": "Refresh",
+      "empty": "No XiaoHeiHe platform instance is running."
+    }
+  }
+}

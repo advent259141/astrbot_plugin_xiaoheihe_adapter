@@ -33,7 +33,7 @@
 - `GET /bbs/app/user/message` 拉取通知消息。
 - `GET /bbs/app/link/tree` 获取帖子和评论上下文。
 - `POST /bbs/app/comment/create` 发送评论回复。
-- 每个 API 请求都带 `hkey`、`_time`、`nonce` 签名参数。
+- 消息查询、帖子详情、评论发送等业务 API 会带 `hkey`、`_time`、`nonce` 签名参数；扫码登录的 QR 接口按网页原始请求只带轻量参数。
 
 ## 限制
 
