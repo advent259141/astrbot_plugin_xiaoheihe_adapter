@@ -1177,6 +1177,29 @@ def api_error_message(data: Any, fallback: str) -> str:
     return "；".join(_string(part) for part in parts if _string(part)) or fallback
 
 
+def direct_message_send_error_message(data: Any) -> str:
+    result = _as_dict(_as_dict(data).get("result"))
+    protocol = _string(result.get("heybox__protocol__execute__directly"))
+    if protocol:
+        normalized = unquote(protocol).lower()
+        if "web_auth" in normalized or "name_verify" in normalized:
+            return "私信发送需要小黑盒安全认证/实名认证，请先在小黑盒 App 完成认证后重试"
+        return "私信发送被小黑盒客户端协议拦截，可能未实际发送"
+    return api_error_message(data, "私信发送未返回消息 ID，可能未实际发送")
+
+
+def is_direct_message_send_ack(data: Any) -> bool:
+    result = _as_dict(_as_dict(data).get("result"))
+    return any(
+        _string(result.get(key))
+        for key in (
+            "heychat_ack_id",
+            "msg_id",
+            "msg_seq",
+        )
+    )
+
+
 class XiaoHeiHeClient:
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config
@@ -1954,6 +1977,8 @@ class XiaoHeiHeClient:
             )
             if data.get("status") != "ok":
                 raise XiaoHeiHeClientError(api_error_message(data, "私信发送失败"))
+            if not is_direct_message_send_ack(data):
+                raise XiaoHeiHeClientError(direct_message_send_error_message(data))
             self._last_direct_message_sent_at = time.time()
             return data
 
