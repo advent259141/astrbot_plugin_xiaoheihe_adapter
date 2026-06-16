@@ -46,7 +46,7 @@ XIAOHEIHE_DEFAULT_CONFIG = {
     "message_fresh_seconds": 300,
     "listen_mentions": True,
     "listen_comments": True,
-    "listen_direct_messages": False,
+    "listen_direct_messages": True,
     "listen_stranger_direct_messages": False,
     "include_link_context": True,
     "max_context_comment_lines": 8,
@@ -121,8 +121,8 @@ XIAOHEIHE_CONFIG_METADATA = {
     "listen_direct_messages": {
         "description": "监听私信",
         "type": "bool",
-        "hint": "默认关闭。开启后会读取最近私信会话，并把对方发来的私信转换为 AstrBot 好友消息。",
-        "default": False,
+        "hint": "默认开启。会读取最近私信会话，并把对方发来的私信转换为 AstrBot 好友消息。",
+        "default": True,
     },
     "listen_stranger_direct_messages": {
         "description": "监听陌生人私信",
@@ -226,7 +226,7 @@ XIAOHEIHE_I18N_RESOURCES = {
         "listen_comments": {"description": "Listen to comments/replies"},
         "listen_direct_messages": {
             "description": "Listen to direct messages",
-            "hint": "Disabled by default. When enabled, recent direct-message conversations are converted to AstrBot friend messages.",
+            "hint": "Enabled by default. Recent direct-message conversations are converted to AstrBot friend messages.",
         },
         "listen_stranger_direct_messages": {
             "description": "Listen to stranger direct messages",
@@ -407,7 +407,7 @@ class XiaoHeiHePlatformAdapter(Platform):
                 if item is not None
             )
 
-        if bool(self.config.get("listen_direct_messages", False)):
+        if bool(self.config.get("listen_direct_messages", True)):
             direct_messages = await self.client.fetch_direct_messages_from_recent(
                 limit=limit,
                 conversation_limit=max(
@@ -594,7 +594,7 @@ class XiaoHeiHePlatformAdapter(Platform):
             "listen_mentions": bool(self.config.get("listen_mentions", True)),
             "listen_comments": bool(self.config.get("listen_comments", True)),
             "listen_direct_messages": bool(
-                self.config.get("listen_direct_messages", False),
+                self.config.get("listen_direct_messages", True),
             ),
             "listen_stranger_direct_messages": bool(
                 self.config.get("listen_stranger_direct_messages", False),

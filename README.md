@@ -35,7 +35,7 @@
 - `heybox_id`：可留空，优先从扫码会话或 Cookie 中读取。
 - `api_params_url`：可选。接口校验严格时，可以复制一条 `https://api.xiaoheihe.cn/...` 完整请求 URL。
 - `poll_interval`：建议 30 秒以上，降低风控风险。
-- `listen_direct_messages`：默认关闭。开启后轮询最近私信会话，只投递对方发来的消息。
+- `listen_direct_messages`：默认开启。轮询最近私信会话，只投递对方发来的消息。
 - `listen_stranger_direct_messages`：默认关闭。开启后会额外读取陌生人私信列表，需同时开启 `listen_direct_messages`。
 - `direct_message_conversation_limit`：每个最近私信会话拉取的历史条数，默认 30。
 - `direct_message_cooldown_seconds`：私信发送冷却秒数，默认 5。
