@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>XiaoHeiHe Adapter Status</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f8fb;
+        --panel: #ffffff;
+        --text: #1f2430;
+        --muted: #687080;
+        --line: #d8dee9;
+        --accent: #2563eb;
+        --ok: #0f8a4b;
+        --warn: #b45309;
+        --bad: #b91c1c;
+      }
+
+      [data-theme="dark"] {
+        color-scheme: dark;
+        --bg: #14171f;
+        --panel: #1d222d;
+        --text: #eef2f7;
+        --muted: #a8b0bd;
+        --line: #333b49;
+        --accent: #6aa3ff;
+        --ok: #5dd08d;
+        --warn: #f1b45d;
+        --bad: #ff7a7a;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+      }
+
+      main {
+        width: min(1120px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 24px 0 40px;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 18px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 24px;
+        font-weight: 700;
+        letter-spacing: 0;
+      }
+
+      button {
+        height: 34px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--text);
+        padding: 0 14px;
+        cursor: pointer;
+      }
+
+      button:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+
+      .metric,
+      .instance {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+
+      .metric {
+        padding: 14px;
+      }
+
+      .metric span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .metric strong {
+        display: block;
+        margin-top: 6px;
+        font-size: 22px;
+        line-height: 1.2;
+      }
+
+      .instances {
+        display: grid;
+        gap: 12px;
+      }
+
+      .instance {
+        padding: 16px;
+      }
+
+      .instance-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .instance-title {
+        font-size: 16px;
+        font-weight: 700;
+      }
+
+      .status {
+        min-width: 82px;
+        text-align: center;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 3px 10px;
+        font-size: 12px;
+      }
+
+      .running {
+        color: var(--ok);
+        border-color: var(--ok);
+      }
+
+      .error {
+        color: var(--bad);
+        border-color: var(--bad);
+      }
+
+      .pending,
+      .stopped {
+        color: var(--warn);
+        border-color: var(--warn);
+      }
+
+      dl {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px 18px;
+        margin: 0;
+      }
+
+      dt {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      dd {
+        margin: 3px 0 0;
+        overflow-wrap: anywhere;
+      }
+
+      .error-box {
+        margin-top: 12px;
+        border-left: 3px solid var(--bad);
+        padding: 8px 10px;
+        background: transparent;
+        color: var(--bad);
+      }
+
+      .empty {
+        border: 1px dashed var(--line);
+        border-radius: 8px;
+        padding: 24px;
+        text-align: center;
+        color: var(--muted);
+      }
+
+      @media (max-width: 760px) {
+        main {
+          width: min(100vw - 24px, 1120px);
+          padding-top: 18px;
+        }
+
+        header {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .summary,
+        dl {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1 id="heading">小黑盒适配器状态</h1>
+        <button id="refresh" type="button">刷新</button>
+      </header>
+      <section class="summary" id="summary"></section>
+      <section class="instances" id="instances"></section>
+    </main>
+
+    <script type="module">
+      const bridge = window.AstrBotPluginPage;
+      const heading = document.getElementById("heading");
+      const refresh = document.getElementById("refresh");
+      const summary = document.getElementById("summary");
+      const instances = document.getElementById("instances");
+
+      function t(key, fallback) {
+        return bridge?.t ? bridge.t(key, fallback) : fallback;
+      }
+
+      function formatTime(value) {
+        if (!value) return "-";
+        const date = new Date(Number(value) * 1000);
+        if (Number.isNaN(date.getTime())) return "-";
+        return date.toLocaleString();
+      }
+
+      function renderSummary(list) {
+        const totals = list.reduce(
+          (acc, item) => {
+            acc.polls += Number(item.poll_count || 0);
+            acc.committed += Number(item.committed_count || 0);
+            acc.sent += Number(item.send_count || 0);
+            acc.errors += item.last_error || item.platform_last_error ? 1 : 0;
+            return acc;
+          },
+          { polls: 0, committed: 0, sent: 0, errors: 0 },
+        );
+        summary.innerHTML = [
+          ["实例", list.length],
+          ["轮询", totals.polls],
+          ["投递", totals.committed],
+          ["发送", totals.sent],
+        ]
+          .map(
+            ([label, value]) =>
+              `<div class="metric"><span>${label}</span><strong>${value}</strong></div>`,
+          )
+          .join("");
+      }
+
+      function renderInstances(list) {
+        if (!list.length) {
+          instances.innerHTML = `<div class="empty">${t(
+            "pages.status.empty",
+            "当前没有运行中的小黑盒平台实例。",
+          )}</div>`;
+          return;
+        }
+        instances.innerHTML = list.map(renderInstance).join("");
+      }
+
+      function renderInstance(item) {
+        const status = String(item.status || "unknown");
+        const lastError =
+          item.last_error ||
+          (item.platform_last_error && item.platform_last_error.message) ||
+          "";
+        return `
+          <article class="instance">
+            <div class="instance-head">
+              <div class="instance-title">${item.id || "xiaoheihe"}</div>
+              <div class="status ${status}">${status}</div>
+            </div>
+            <dl>
+              ${field("heybox_id", item.heybox_id)}
+              ${field("device_id", item.device_id)}
+              ${field("监听 @", item.listen_mentions ? "是" : "否")}
+              ${field("监听评论", item.listen_comments ? "是" : "否")}
+              ${field("轮询间隔", `${item.poll_interval || 0}s`)}
+              ${field("新鲜窗口", `${item.message_fresh_seconds || 0}s`)}
+              ${field("最近轮询", formatTime(item.last_poll_at))}
+              ${field("最近消息", formatTime(item.last_message_at))}
+              ${field("最近发送", formatTime(item.last_send_at))}
+              ${field("拉取消息", item.received_count || 0)}
+              ${field("投递事件", item.committed_count || 0)}
+              ${field("跳过重复", item.skipped_duplicate_count || 0)}
+            </dl>
+            ${
+              lastError
+                ? `<div class="error-box">${escapeHtml(lastError)}</div>`
+                : ""
+            }
+          </article>
+        `;
+      }
+
+      function field(label, value) {
+        return `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(
+          value ?? "-",
+        )}</dd></div>`;
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      async function load() {
+        refresh.disabled = true;
+        try {
+          const result = await bridge.apiGet("status");
+          const list = Array.isArray(result.instances) ? result.instances : [];
+          renderSummary(list);
+          renderInstances(list);
+        } catch (error) {
+          summary.innerHTML = "";
+          instances.innerHTML = `<div class="error-box">${escapeHtml(
+            error.message || String(error),
+          )}</div>`;
+        } finally {
+          refresh.disabled = false;
+        }
+      }
+
+      await bridge.ready();
+      function renderText() {
+        heading.textContent = t("pages.status.heading", "小黑盒适配器状态");
+        refresh.textContent = t("pages.status.refresh", "刷新");
+        document.title = t("pages.status.title", "运行状态");
+      }
+      renderText();
+      bridge.onContext(renderText);
+      refresh.addEventListener("click", load);
+      await load();
+    </script>
+  </body>
+</html>

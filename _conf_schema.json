@@ -1,0 +1,20 @@
+{
+  "status_page_enabled": {
+    "description": "启用状态页",
+    "type": "bool",
+    "hint": "是否在插件详情中提供小黑盒适配器运行状态页和扫码登录页。",
+    "default": true
+  },
+  "show_sensitive_status": {
+    "description": "显示敏感状态",
+    "type": "bool",
+    "hint": "状态页是否显示 heybox_id、device_id、Cookie 等调试信息。默认关闭。",
+    "default": false
+  },
+  "login_request_timeout": {
+    "description": "扫码登录请求超时",
+    "type": "int",
+    "hint": "插件登录页创建二维码和轮询扫码状态的请求超时秒数。",
+    "default": 20
+  }
+}
