@@ -289,9 +289,12 @@ class XiaoHeiHePlatformAdapter(Platform):
             "skipped_stale_count": 0,
             "context_fetch_error_count": 0,
             "send_count": 0,
+            "send_error_count": 0,
             "last_poll_at": None,
             "last_message_at": None,
             "last_send_at": None,
+            "last_send_error": None,
+            "last_send_error_at": None,
             "last_error": None,
             "last_error_at": None,
         }
@@ -360,14 +363,17 @@ class XiaoHeiHePlatformAdapter(Platform):
         if len(text) > max_reply_chars:
             text = text[:max_reply_chars].rstrip()
         if text or image_urls:
-            await self.client.send_text_to_session(
-                session.session_id,
-                text,
-                image_urls=image_urls,
-                cooldown_seconds=self._send_cooldown_for_session(session.session_id),
-            )
-            self._stats["send_count"] += 1
-            self._stats["last_send_at"] = int(time.time())
+            try:
+                await self.client.send_text_to_session(
+                    session.session_id,
+                    text,
+                    image_urls=image_urls,
+                    cooldown_seconds=self._send_cooldown_for_session(session.session_id),
+                )
+            except Exception as exc:
+                self._mark_send_error(exc)
+                raise
+            self._mark_sent()
         await super().send_by_session(session, message_chain)
 
     def get_client(self) -> XiaoHeiHeClient:
@@ -471,6 +477,7 @@ class XiaoHeiHePlatformAdapter(Platform):
             max_reply_chars=int(self.config.get("max_reply_chars") or 800),
             comment_cooldown_seconds=self._send_cooldown_for_session(abm.session_id),
             on_sent=self._mark_sent,
+            on_send_error=self._mark_send_error,
         )
         event.set_extra("xiaoheihe_source", message.source)
         if message.session_id.startswith("dm!"):
@@ -489,6 +496,14 @@ class XiaoHeiHePlatformAdapter(Platform):
     def _mark_sent(self) -> None:
         self._stats["send_count"] += 1
         self._stats["last_send_at"] = int(time.time())
+        self._stats["last_send_error"] = None
+        self._stats["last_send_error_at"] = None
+
+    def _mark_send_error(self, exc: BaseException) -> None:
+        self._stats["send_error_count"] += 1
+        self._stats["last_send_error"] = str(exc)
+        self._stats["last_send_error_at"] = int(time.time())
+        logger.warning("[XiaoHeiHe] send failed: %s", exc)
 
     def _send_cooldown_for_session(self, session_id: str) -> int:
         if str(session_id or "").startswith("dm!"):

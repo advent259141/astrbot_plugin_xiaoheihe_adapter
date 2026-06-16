@@ -23,12 +23,14 @@ class XiaoHeiHeMessageEvent(AstrMessageEvent):
         max_reply_chars: int = 800,
         comment_cooldown_seconds: int = 30,
         on_sent: Callable[[], None] | None = None,
+        on_send_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         super().__init__(message_str, message_obj, platform_meta, session_id)
         self.client = client
         self.max_reply_chars = max(1, int(max_reply_chars or 800))
         self.comment_cooldown_seconds = max(0, int(comment_cooldown_seconds or 0))
         self._on_sent = on_sent
+        self._on_send_error = on_send_error
 
     async def send(self, message: MessageChain) -> None:
         text = self._message_chain_to_text(message).strip()
@@ -36,12 +38,17 @@ class XiaoHeiHeMessageEvent(AstrMessageEvent):
         if text or image_urls:
             if len(text) > self.max_reply_chars:
                 text = text[: self.max_reply_chars].rstrip()
-            await self.client.send_text_to_session(
-                self.session_id,
-                text,
-                image_urls=image_urls,
-                cooldown_seconds=self.comment_cooldown_seconds,
-            )
+            try:
+                await self.client.send_text_to_session(
+                    self.session_id,
+                    text,
+                    image_urls=image_urls,
+                    cooldown_seconds=self.comment_cooldown_seconds,
+                )
+            except Exception as exc:
+                if self._on_send_error:
+                    self._on_send_error(exc)
+                raise
             if self._on_sent:
                 self._on_sent()
         await super().send(message)

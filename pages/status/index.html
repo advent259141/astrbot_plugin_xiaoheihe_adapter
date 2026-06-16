@@ -243,7 +243,10 @@
             acc.polls += Number(item.poll_count || 0);
             acc.committed += Number(item.committed_count || 0);
             acc.sent += Number(item.send_count || 0);
-            acc.errors += item.last_error || item.platform_last_error ? 1 : 0;
+            acc.errors +=
+              item.last_error || item.platform_last_error || item.last_send_error
+                ? 1
+                : 0;
             return acc;
           },
           { polls: 0, committed: 0, sent: 0, errors: 0 },
@@ -253,6 +256,7 @@
           ["轮询", totals.polls],
           ["投递", totals.committed],
           ["发送", totals.sent],
+          ["异常", totals.errors],
         ]
           .map(
             ([label, value]) =>
@@ -278,6 +282,7 @@
           item.last_error ||
           (item.platform_last_error && item.platform_last_error.message) ||
           "";
+        const lastSendError = item.last_send_error || "";
         return `
           <article class="instance">
             <div class="instance-head">
@@ -296,6 +301,8 @@
               ${field("最近轮询", formatTime(item.last_poll_at))}
               ${field("最近消息", formatTime(item.last_message_at))}
               ${field("最近发送", formatTime(item.last_send_at))}
+              ${field("发送失败", item.send_error_count || 0)}
+              ${field("最近失败", formatTime(item.last_send_error_at))}
               ${field("拉取消息", item.received_count || 0)}
               ${field("投递事件", item.committed_count || 0)}
               ${field("跳过重复", item.skipped_duplicate_count || 0)}
@@ -303,6 +310,11 @@
             ${
               lastError
                 ? `<div class="error-box">${escapeHtml(lastError)}</div>`
+                : ""
+            }
+            ${
+              lastSendError
+                ? `<div class="error-box">${escapeHtml(lastSendError)}</div>`
                 : ""
             }
           </article>
