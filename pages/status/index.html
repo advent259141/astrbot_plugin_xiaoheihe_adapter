@@ -289,6 +289,8 @@
               ${field("device_id", item.device_id)}
               ${field("监听 @", item.listen_mentions ? "是" : "否")}
               ${field("监听评论", item.listen_comments ? "是" : "否")}
+              ${field("监听私信", item.listen_direct_messages ? "是" : "否")}
+              ${field("监听陌生人私信", item.listen_stranger_direct_messages ? "是" : "否")}
               ${field("轮询间隔", `${item.poll_interval || 0}s`)}
               ${field("新鲜窗口", `${item.message_fresh_seconds || 0}s`)}
               ${field("最近轮询", formatTime(item.last_poll_at))}

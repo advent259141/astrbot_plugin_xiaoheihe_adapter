@@ -2,7 +2,7 @@ name: astrbot_plugin_xiaoheihe_adapter
 display_name: 小黑盒适配器
 desc: 以网页登录态轮询小黑盒消息，并通过评论接口回复的 AstrBot 平台适配器。支持插件页扫码登录。
 short_desc: 小黑盒平台适配器
-version: 0.2.3
+version: 0.2.4
 author: local
 repo: ""
 support_platforms:

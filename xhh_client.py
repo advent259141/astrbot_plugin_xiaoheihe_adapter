@@ -25,6 +25,8 @@ WEB_ORIGIN = "https://www.xiaoheihe.cn"
 MESSAGE_API_PATH = "/bbs/app/user/message"
 LINK_TREE_API_PATH = "/bbs/app/link/tree"
 COMMENT_CREATE_API_PATH = "/bbs/app/comment/create"
+DIRECT_MESSAGE_API_PATH = "/chatroom/v2/msg/user"
+STRANGER_DIRECT_MESSAGE_API_PATH = "/chat/stranger_messages/"
 IMAGE_COPY_BY_URL_API_PATH = "/bbs/app/api/qcloud/cos/copy/image/by/url"
 COS_UPLOAD_INFO_API_PATH = "/bbs/app/api/qcloud/cos/upload/info/v2"
 COS_UPLOAD_TOKEN_API_PATH = "/bbs/app/api/qcloud/cos/upload/token/v2"
@@ -114,6 +116,24 @@ class ReplyTarget:
 
 
 @dataclass
+class DirectMessageTarget:
+    user_id: str
+
+    def to_session_id(self) -> str:
+        return "!".join(["dm", _escape_session_part(self.user_id)])
+
+    @classmethod
+    def from_session_id(cls, session_id: str) -> "DirectMessageTarget":
+        parts = str(session_id or "").split("!", 1)
+        if len(parts) != 2 or parts[0] != "dm":
+            raise ValueError(f"unsupported XiaoHeiHe direct message session id: {session_id!r}")
+        user_id = _unescape_session_part(parts[1])
+        if not user_id:
+            raise ValueError(f"unsupported XiaoHeiHe direct message session id: {session_id!r}")
+        return cls(user_id=user_id)
+
+
+@dataclass
 class IncomingMessage:
     message_id: str
     source: str
@@ -135,6 +155,8 @@ class IncomingMessage:
 
     @property
     def target_key(self) -> str:
+        if self.session_id.startswith("dm!"):
+            return f"{self.source}::{self.session_id}::{self.message_id or self.timestamp}"
         return f"{self.link_id}::{self.reply_id}"
 
 
@@ -898,6 +920,113 @@ def get_link_title(message: dict[str, Any]) -> str:
     return _string(link.get("title"))
 
 
+def get_direct_message_user_id(item: Any) -> str:
+    item = _as_dict(item)
+    user = _as_dict(
+        item.get("user_a")
+        or item.get("user")
+        or item.get("recipient_info")
+        or item.get("sender_info"),
+    )
+    return _string(
+        get_user_id(user)
+        or item.get("to_user_id")
+        or item.get("target_user_id")
+        or item.get("user_id")
+        or item.get("userid")
+        or (_string(item.get("message_id")) if _string(item.get("entry")) == "message" else ""),
+    )
+
+
+def get_direct_message_sender_id(message: dict[str, Any]) -> str:
+    sender = _as_dict(
+        message.get("sender")
+        or message.get("sender_info")
+        or message.get("user")
+        or message.get("user_a"),
+    )
+    return _string(
+        message.get("sender_id")
+        or message.get("from_user_id")
+        or message.get("from_uid")
+        or get_user_id(sender),
+    )
+
+
+def get_direct_message_timestamp(message: dict[str, Any]) -> int:
+    for key in ("send_time", "timestamp", "time", "update_time", "created_at", "create_time"):
+        value = _number(message.get(key))
+        if value > 0:
+            return int(value / 1000 if value > 100_000_000_000 else value)
+    return int(time.time())
+
+
+def get_direct_message_text(message: dict[str, Any]) -> str:
+    return strip_html(
+        message.get("content")
+        or message.get("msg")
+        or message.get("text")
+        or message.get("message")
+        or "",
+    )
+
+
+def get_direct_message_image_urls(message: dict[str, Any]) -> list[str]:
+    urls = extract_image_urls(
+        [
+            message.get("img"),
+            message.get("imgs"),
+            message.get("image"),
+            message.get("images"),
+            message.get("content"),
+        ],
+    )
+    for value in (message.get("img"), message.get("imgs")):
+        text = _decode_htmlish_text(value)
+        for match in re.finditer(r"https?://[^\s,;|\"'<>()]+", text, flags=re.I):
+            urls.append(match.group(0).rstrip("，。,.；;"))
+    return _unique_strings(urls)
+
+
+def get_direct_message_rich_text(message: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "content": message.get("content"),
+        "msg": message.get("msg"),
+        "text": message.get("text"),
+        "img": message.get("img"),
+        "msg_type": message.get("msg_type"),
+        "seq": message.get("seq"),
+    }
+
+
+def get_direct_message_id(message: dict[str, Any], peer_user_id: str) -> str:
+    sender_id = get_direct_message_sender_id(message)
+    seq = _string(message.get("seq") or message.get("msg_seq") or message.get("sequence"))
+    explicit_id = _string(
+        message.get("msg_id")
+        or message.get("message_id")
+        or message.get("id")
+        or message.get("_id"),
+    )
+    if explicit_id:
+        return f"dm:{peer_user_id}:{explicit_id}"
+    if seq:
+        return f"dm:{peer_user_id}:{seq}"
+    digest = _md5(
+        json.dumps(
+            {
+                "sender": sender_id,
+                "time": get_direct_message_timestamp(message),
+                "text": get_direct_message_text(message),
+                "images": get_direct_message_image_urls(message),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+    )[:12]
+    return f"dm:{peer_user_id}:{digest}"
+
+
 def get_comment_id(comment: Any) -> str:
     comment = _as_dict(comment)
     return _string(
@@ -1071,8 +1200,13 @@ class XiaoHeiHeClient:
         self._session: aiohttp.ClientSession | None = None
         self._send_lock = asyncio.Lock()
         self._last_comment_sent_at = 0.0
+        self._last_direct_message_sent_at = 0.0
+        self._direct_message_ack_id = int(time.time() * 1000) % 1_000_000_000
         if self.device_id:
             self.api_params.setdefault("device_id", self.device_id)
+
+    def is_self_user_id(self, user_id: Any) -> bool:
+        return bool(self.heybox_id and _string(user_id) == self.heybox_id)
 
     async def close(self) -> None:
         if self._session and not self._session.closed:
@@ -1337,6 +1471,129 @@ class XiaoHeiHeClient:
                 continue
             ret.append(message)
         return ret
+
+    async def fetch_direct_message_entries(self, limit: int = 20) -> list[dict[str, Any]]:
+        if not self.heybox_id:
+            raise XiaoHeiHeClientError("缺少 heybox_id，请在平台配置中填写或提供 Cookie")
+        params: dict[str, Any] = {
+            "list_type": "2",
+            "offset": "0",
+            "limit": str(max(1, min(int(limit or 20), 50))),
+            "heybox_id": self.heybox_id,
+        }
+        data = await self._request_json("GET", self.build_api_url(MESSAGE_API_PATH, params))
+        if data.get("status") != "ok":
+            raise XiaoHeiHeClientError(api_error_message(data, "私信列表查询失败"))
+        messages = _as_list(_as_dict(data.get("result")).get("messages"))
+        return [
+            message
+            for message in messages
+            if (
+                isinstance(message, dict)
+                and _string(message.get("entry")) == "message"
+                and get_direct_message_user_id(message)
+            )
+        ]
+
+    async def fetch_stranger_direct_message_entries(self, limit: int = 20) -> list[dict[str, Any]]:
+        if not self.heybox_id:
+            raise XiaoHeiHeClientError("缺少 heybox_id，请在平台配置中填写或提供 Cookie")
+        params: dict[str, Any] = {
+            "offset": "0",
+            "limit": str(max(1, min(int(limit or 20), 50))),
+            "heybox_id": self.heybox_id,
+        }
+        data = await self._request_json(
+            "GET",
+            self.build_api_url(STRANGER_DIRECT_MESSAGE_API_PATH, params),
+        )
+        if data.get("status") != "ok":
+            raise XiaoHeiHeClientError(api_error_message(data, "陌生人私信列表查询失败"))
+        result = _as_dict(data.get("result"))
+        raw_items = (
+            result.get("list")
+            or result.get("messages")
+            or result.get("items")
+            or data.get("list")
+            or []
+        )
+        return [
+            item
+            for item in _as_list(raw_items)
+            if isinstance(item, dict) and get_direct_message_user_id(item)
+        ]
+
+    async def fetch_direct_messages(
+        self,
+        to_user_id: Any,
+        *,
+        limit: int = 30,
+        seq: Any = None,
+    ) -> list[dict[str, Any]]:
+        if not self.heybox_id:
+            raise XiaoHeiHeClientError("缺少 heybox_id，请在平台配置中填写或提供 Cookie")
+        target_user_id = _string(to_user_id)
+        if not target_user_id:
+            return []
+        params: dict[str, Any] = {
+            "to_user_id": target_user_id,
+            "offset": "0",
+            "limit": str(max(1, min(int(limit or 30), 50))),
+            "heybox_id": self.heybox_id,
+        }
+        if _string(seq):
+            params["seq"] = _string(seq)
+        data = await self._request_json(
+            "GET",
+            self.build_api_url(DIRECT_MESSAGE_API_PATH, params),
+        )
+        if data.get("status") != "ok":
+            raise XiaoHeiHeClientError(api_error_message(data, "私信会话查询失败"))
+        result = _as_dict(data.get("result"))
+        return [
+            message
+            for message in _as_list(result.get("list"))
+            if isinstance(message, dict)
+        ]
+
+    async def fetch_direct_messages_from_recent(
+        self,
+        *,
+        limit: int = 20,
+        conversation_limit: int = 30,
+        include_strangers: bool = False,
+    ) -> list[IncomingMessage]:
+        entries = [
+            (entry, "direct_message")
+            for entry in await self.fetch_direct_message_entries(limit=limit)
+        ]
+        if include_strangers:
+            entries.extend(
+                (entry, "stranger_direct_message")
+                for entry in await self.fetch_stranger_direct_message_entries(limit=limit)
+            )
+
+        incoming: list[IncomingMessage] = []
+        seen_user_ids: set[str] = set()
+        for entry, source in entries:
+            user_id = get_direct_message_user_id(entry)
+            if not user_id or user_id in seen_user_ids:
+                continue
+            seen_user_ids.add(user_id)
+            history = await self.fetch_direct_messages(
+                user_id,
+                limit=conversation_limit,
+            )
+            for message in history:
+                normalized = self.normalize_direct_message(
+                    message,
+                    peer_user_id=user_id,
+                    peer_info=entry.get("user_a") or entry,
+                    source=source,
+                )
+                if normalized is not None:
+                    incoming.append(normalized)
+        return incoming
 
     async def _fetch_message_list(
         self,
@@ -1651,6 +1908,55 @@ class XiaoHeiHeClient:
             self._last_comment_sent_at = time.time()
             return data
 
+    async def submit_direct_message(
+        self,
+        to_user_id: Any,
+        text: str,
+        *,
+        image_urls: Iterable[Any] | None = None,
+        cooldown_seconds: int = 5,
+    ) -> dict[str, Any]:
+        if not self.heybox_id:
+            raise XiaoHeiHeClientError("缺少 heybox_id")
+        target_user_id = _string(to_user_id)
+        text = _string(text)
+        prepared_image_urls = await self.prepare_comment_image_urls(image_urls or [])
+        if not target_user_id:
+            raise XiaoHeiHeClientError("缺少私信目标用户 ID")
+        if not text and not prepared_image_urls:
+            raise XiaoHeiHeClientError("私信内容为空，已取消发送")
+
+        async with self._send_lock:
+            cooldown = max(0, int(cooldown_seconds or 0))
+            elapsed = time.time() - self._last_direct_message_sent_at
+            if cooldown and elapsed < cooldown:
+                await asyncio.sleep(cooldown - elapsed)
+
+            self._direct_message_ack_id += 1
+            url = self.build_api_url(
+                DIRECT_MESSAGE_API_PATH,
+                {
+                    "to_user_id": target_user_id,
+                    "heybox_id": self.heybox_id,
+                },
+            )
+            body = {
+                "heybox_ack_id": str(self._direct_message_ack_id),
+                "img": "".join(prepared_image_urls),
+                "msg": text,
+                "msg_type": "6",
+            }
+            data = await self._request_json(
+                "POST",
+                url,
+                data=urlencode(body),
+                headers=self._form_headers(),
+            )
+            if data.get("status") != "ok":
+                raise XiaoHeiHeClientError(api_error_message(data, "私信发送失败"))
+            self._last_direct_message_sent_at = time.time()
+            return data
+
     async def send_text_to_session(
         self,
         session_id: str,
@@ -1659,6 +1965,14 @@ class XiaoHeiHeClient:
         image_urls: Iterable[Any] | None = None,
         cooldown_seconds: int = 30,
     ) -> dict[str, Any]:
+        if str(session_id or "").startswith("dm!"):
+            target = DirectMessageTarget.from_session_id(session_id)
+            return await self.submit_direct_message(
+                target.user_id,
+                text,
+                image_urls=image_urls,
+                cooldown_seconds=cooldown_seconds,
+            )
         target = ReplyTarget.from_session_id(session_id)
         return await self.submit_comment(
             target.link_id,
@@ -1712,5 +2026,59 @@ class XiaoHeiHeClient:
             rich_text=get_message_rich_text(message),
             image_urls=get_message_image_urls(message),
             replied_image_urls=get_replied_image_urls(message),
+            raw=message,
+        )
+
+    def normalize_direct_message(
+        self,
+        message: dict[str, Any],
+        *,
+        peer_user_id: Any,
+        peer_info: Any = None,
+        source: str = "direct_message",
+    ) -> IncomingMessage | None:
+        peer_user_id_text = _string(peer_user_id)
+        if not peer_user_id_text:
+            return None
+
+        sender_id = get_direct_message_sender_id(message)
+        if self.is_self_user_id(sender_id):
+            return None
+
+        sender_info = _as_dict(
+            message.get("sender")
+            or message.get("sender_info")
+            or message.get("user")
+            or message.get("user_a"),
+        )
+        peer_info_dict = _as_dict(peer_info)
+        sender_name = (
+            get_user_display_name(sender_info)
+            or get_user_display_name(peer_info_dict)
+            or sender_id
+            or peer_user_id_text
+            or "小黑盒用户"
+        )
+        text = get_direct_message_text(message)
+        image_urls = get_direct_message_image_urls(message)
+        if not text and not image_urls:
+            return None
+
+        session = DirectMessageTarget(peer_user_id_text)
+        message_id = get_direct_message_id(message, peer_user_id_text)
+        return IncomingMessage(
+            message_id=message_id,
+            source=source,
+            text=text,
+            sender_id=sender_id or peer_user_id_text,
+            sender_name=sender_name,
+            timestamp=get_direct_message_timestamp(message),
+            link_id="",
+            reply_id="",
+            root_id="",
+            session_id=session.to_session_id(),
+            notification_text=text,
+            rich_text=get_direct_message_rich_text(message),
+            image_urls=image_urls,
             raw=message,
         )

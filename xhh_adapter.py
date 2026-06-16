@@ -46,12 +46,16 @@ XIAOHEIHE_DEFAULT_CONFIG = {
     "message_fresh_seconds": 300,
     "listen_mentions": True,
     "listen_comments": True,
+    "listen_direct_messages": False,
+    "listen_stranger_direct_messages": False,
     "include_link_context": True,
     "max_context_comment_lines": 8,
     "message_limit": 20,
+    "direct_message_conversation_limit": 30,
     "max_reply_chars": 800,
     "request_timeout": 20,
     "comment_cooldown_seconds": 30,
+    "direct_message_cooldown_seconds": 5,
     "debug_log_raw_messages": False,
 }
 
@@ -114,6 +118,18 @@ XIAOHEIHE_CONFIG_METADATA = {
         "type": "bool",
         "default": True,
     },
+    "listen_direct_messages": {
+        "description": "监听私信",
+        "type": "bool",
+        "hint": "默认关闭。开启后会读取最近私信会话，并把对方发来的私信转换为 AstrBot 好友消息。",
+        "default": False,
+    },
+    "listen_stranger_direct_messages": {
+        "description": "监听陌生人私信",
+        "type": "bool",
+        "hint": "默认关闭。仅在监听私信开启时生效，会额外读取陌生人私信列表。",
+        "default": False,
+    },
     "include_link_context": {
         "description": "附带帖子上下文",
         "type": "bool",
@@ -131,6 +147,12 @@ XIAOHEIHE_CONFIG_METADATA = {
         "type": "int",
         "default": 20,
     },
+    "direct_message_conversation_limit": {
+        "description": "每个私信会话拉取条数",
+        "type": "int",
+        "hint": "监听私信时，每个最近私信会话最多读取多少条历史消息。",
+        "default": 30,
+    },
     "max_reply_chars": {
         "description": "最大回复字符数",
         "type": "int",
@@ -147,6 +169,12 @@ XIAOHEIHE_CONFIG_METADATA = {
         "type": "int",
         "hint": "同一平台实例连续发表评论的最小间隔。",
         "default": 30,
+    },
+    "direct_message_cooldown_seconds": {
+        "description": "私信发送冷却秒数",
+        "type": "int",
+        "hint": "同一平台实例连续发送私信的最小间隔。",
+        "default": 5,
     },
     "debug_log_raw_messages": {
         "description": "调试日志输出原始消息",
@@ -196,6 +224,14 @@ XIAOHEIHE_I18N_RESOURCES = {
         },
         "listen_mentions": {"description": "Listen to mentions"},
         "listen_comments": {"description": "Listen to comments/replies"},
+        "listen_direct_messages": {
+            "description": "Listen to direct messages",
+            "hint": "Disabled by default. When enabled, recent direct-message conversations are converted to AstrBot friend messages.",
+        },
+        "listen_stranger_direct_messages": {
+            "description": "Listen to stranger direct messages",
+            "hint": "Disabled by default. Only works when direct-message listening is enabled.",
+        },
         "include_link_context": {
             "description": "Include post context",
             "hint": "Fetch post detail and comment summary before dispatching the AstrBot event.",
@@ -205,9 +241,14 @@ XIAOHEIHE_I18N_RESOURCES = {
             "hint": "Maximum number of comment summary lines appended to the event text.",
         },
         "message_limit": {"description": "Messages fetched per poll"},
+        "direct_message_conversation_limit": {
+            "description": "Direct-message history fetched per conversation",
+            "hint": "Maximum history messages fetched from each recent direct-message conversation.",
+        },
         "max_reply_chars": {"description": "Maximum reply characters"},
         "request_timeout": {"description": "Request timeout seconds"},
         "comment_cooldown_seconds": {"description": "Comment cooldown seconds"},
+        "direct_message_cooldown_seconds": {"description": "Direct-message cooldown seconds"},
         "debug_log_raw_messages": {"description": "Log raw messages for debugging"},
     },
 }
@@ -323,7 +364,7 @@ class XiaoHeiHePlatformAdapter(Platform):
                 session.session_id,
                 text,
                 image_urls=image_urls,
-                cooldown_seconds=int(self.config.get("comment_cooldown_seconds") or 30),
+                cooldown_seconds=self._send_cooldown_for_session(session.session_id),
             )
             self._stats["send_count"] += 1
             self._stats["last_send_at"] = int(time.time())
@@ -365,6 +406,24 @@ class XiaoHeiHePlatformAdapter(Platform):
                 )
                 if item is not None
             )
+
+        if bool(self.config.get("listen_direct_messages", False)):
+            direct_messages = await self.client.fetch_direct_messages_from_recent(
+                limit=limit,
+                conversation_limit=max(
+                    1,
+                    min(
+                        int(self.config.get("direct_message_conversation_limit") or 30),
+                        50,
+                    ),
+                ),
+                include_strangers=bool(
+                    self.config.get("listen_stranger_direct_messages", False),
+                ),
+            )
+            if self.config.get("debug_log_raw_messages"):
+                logger.debug("[XiaoHeiHe] direct message normalized messages: %s", direct_messages)
+            incoming.extend(direct_messages)
 
         incoming.sort(key=lambda item: item.timestamp)
         self._stats["received_count"] += len(incoming)
@@ -410,16 +469,17 @@ class XiaoHeiHePlatformAdapter(Platform):
             session_id=abm.session_id,
             client=self.client,
             max_reply_chars=int(self.config.get("max_reply_chars") or 800),
-            comment_cooldown_seconds=int(
-                self.config.get("comment_cooldown_seconds") or 30,
-            ),
+            comment_cooldown_seconds=self._send_cooldown_for_session(abm.session_id),
             on_sent=self._mark_sent,
         )
         event.set_extra("xiaoheihe_source", message.source)
-        event.set_extra("xiaoheihe_link_id", message.link_id)
-        event.set_extra("xiaoheihe_reply_id", message.reply_id)
-        event.set_extra("xiaoheihe_root_id", message.root_id)
-        event.set_extra("xiaoheihe_link_title", message.link_title)
+        if message.session_id.startswith("dm!"):
+            event.set_extra("xiaoheihe_dm_user_id", message.sender_id)
+        else:
+            event.set_extra("xiaoheihe_link_id", message.link_id)
+            event.set_extra("xiaoheihe_reply_id", message.reply_id)
+            event.set_extra("xiaoheihe_root_id", message.root_id)
+            event.set_extra("xiaoheihe_link_title", message.link_title)
         event.set_extra("xiaoheihe_rich_text", self._build_rich_text_extra(message, context))
         event.set_extra("xiaoheihe_image_urls", self._collect_image_urls(message, context))
         self.commit_event(event)
@@ -430,7 +490,14 @@ class XiaoHeiHePlatformAdapter(Platform):
         self._stats["send_count"] += 1
         self._stats["last_send_at"] = int(time.time())
 
+    def _send_cooldown_for_session(self, session_id: str) -> int:
+        if str(session_id or "").startswith("dm!"):
+            return int(self.config.get("direct_message_cooldown_seconds") or 5)
+        return int(self.config.get("comment_cooldown_seconds") or 30)
+
     async def _fetch_context(self, message: IncomingMessage) -> LinkContext:
+        if message.session_id.startswith("dm!"):
+            return LinkContext()
         if not bool(self.config.get("include_link_context", True)):
             return LinkContext()
         try:
@@ -456,7 +523,10 @@ class XiaoHeiHePlatformAdapter(Platform):
         context: LinkContext | None = None,
     ) -> AstrBotMessage:
         context = context or LinkContext()
-        text = message.text or message.notification_text or "[小黑盒消息]"
+        if message.session_id.startswith("dm!"):
+            text = message.text or message.notification_text or "[小黑盒私信]"
+        else:
+            text = message.text or message.notification_text or "[小黑盒消息]"
         if message.link_title:
             text = f"{text}\n\n帖子：{message.link_title}"
         if context.text:
@@ -523,6 +593,12 @@ class XiaoHeiHePlatformAdapter(Platform):
             "has_api_params_url": bool(self.config.get("api_params_url")),
             "listen_mentions": bool(self.config.get("listen_mentions", True)),
             "listen_comments": bool(self.config.get("listen_comments", True)),
+            "listen_direct_messages": bool(
+                self.config.get("listen_direct_messages", False),
+            ),
+            "listen_stranger_direct_messages": bool(
+                self.config.get("listen_stranger_direct_messages", False),
+            ),
             "poll_interval": int(self.config.get("poll_interval") or 60),
             "message_fresh_seconds": int(
                 self.config.get("message_fresh_seconds") or 300,
