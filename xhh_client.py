@@ -131,6 +131,8 @@ def _md5(value: str) -> str:
 
 
 def _mix_columns(values: list[int]) -> list[int]:
+    values = list(values)
+
     def xtime(value: int) -> int:
         return ((value << 1) ^ 27) & 255 if value & 128 else value << 1
 
@@ -151,7 +153,8 @@ def _mix_columns(values: list[int]) -> list[int]:
     result[1] = q(values[0]) ^ g(values[1]) ^ y(values[2]) ^ r(values[3])
     result[2] = r(values[0]) ^ q(values[1]) ^ g(values[2]) ^ y(values[3])
     result[3] = y(values[0]) ^ r(values[1]) ^ q(values[2]) ^ g(values[3])
-    return result
+    values[:4] = result
+    return values
 
 
 def _map_by_alphabet(value: str, alphabet: str, end: int) -> str:
