@@ -40,7 +40,7 @@
 - `GET /account/qr_state/` 轮询扫码状态并保存登录 Cookie。
 - `GET /bbs/app/user/message` 拉取通知消息。
 - `GET /bbs/app/link/tree` 获取帖子和评论上下文。
-- `POST /bbs/app/api/qcloud/cos/copy/image/by/url` 转存待发送的 HTTP 图片。
+- `GET /bbs/app/api/qcloud/cos/copy/image/by/url` 转存待发送的 HTTP 图片。
 - `POST /bbs/app/api/qcloud/cos/upload/info/v2`、`upload/token/v2`、`upload/callback/v2` 申请本地图片上传 key、临时凭证和回调预览地址。
 - `PUT https://<bucket>.cos.<region>.myqcloud.com/<key>` 直传本地图片文件到小黑盒 COS。
 - `POST /bbs/app/comment/create` 发送评论回复。
