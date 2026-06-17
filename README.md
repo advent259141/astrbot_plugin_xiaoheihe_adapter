@@ -11,6 +11,9 @@
 - 回复文本评论。
 - 回复图片：HTTP/HTTPS 图片会先调用小黑盒转存接口，本地图片文件会按网页端流程直传小黑盒 COS，再按评论图片格式发送。
 - 回复私信文本和图片；图片同样支持 HTTP/HTTPS 转存和本地文件直传 COS。
+- 提供 LLM 逛帖工具：读取首页推荐帖子、搜索内容帖、读取指定帖子正文和评论区摘要。
+- 可选提供 LLM 主动主评论工具；默认只注册不允许实际发送，需显式开启并传入 `confirm=true`。
+- 可选提供 LLM 主动操作工具：收藏帖子、点赞帖子、点赞评论、关注用户；默认只注册不允许实际执行，需显式开启并传入 `confirm=true`。
 
 ## 登录
 
@@ -40,6 +43,21 @@
 - `direct_message_conversation_limit`：每个最近私信会话拉取的历史条数，默认 30。
 - `direct_message_cooldown_seconds`：私信发送冷却秒数，默认 5。
 
+## LLM 工具
+
+插件会注册以下工具：
+
+- `xiaoheihe_list_feeds`：读取首页推荐帖子列表。
+- `xiaoheihe_read_post`：读取指定 `link_id` 的帖子正文、图片和评论区摘要。
+- `xiaoheihe_search_posts`：按关键词搜索小黑盒内容帖。
+- `xiaoheihe_comment_post`：在指定帖子下发送主评论。
+- `xiaoheihe_favour_post`：收藏或取消收藏指定帖子。
+- `xiaoheihe_award_post`：点赞或取消点赞指定帖子。
+- `xiaoheihe_support_comment`：点赞或取消点赞指定评论。
+- `xiaoheihe_follow_user`：关注或取消关注指定用户。
+
+默认配置下，读取和搜索类工具可直接使用；主动评论、收藏、点赞、关注类工具会出现在工具列表中，但 `enable_llm_comment_tool` 和 `enable_llm_action_tools` 默认关闭，调用时不会实际发送或执行。若要允许主动评论，需要开启 `enable_llm_comment_tool`；若要允许收藏、点赞、关注等主动操作，需要开启 `enable_llm_action_tools`。所有主动工具仍要求参数包含 `confirm=true`。建议让模型先展示拟发送内容或拟执行操作，得到用户明确确认后再调用。
+
 ## 原理
 
 小黑盒没有公开 Bot API。插件复用网页登录态：
@@ -50,18 +68,25 @@
 - `GET /bbs/app/user/message?list_type=2` 拉取最近私信会话。
 - `GET /chat/stranger_messages/` 拉取陌生人私信会话。
 - `GET /chatroom/v2/msg/user` 拉取某个用户的私信历史。
+- `GET /bbs/app/feeds` 拉取首页推荐帖子。
 - `GET /bbs/app/link/tree` 获取帖子和评论上下文。
+- `GET /bbs/app/api/general/search/v1` 搜索内容帖。
 - `GET /bbs/app/api/qcloud/cos/copy/image/by/url` 转存待发送的 HTTP 图片。
 - `POST /bbs/app/api/qcloud/cos/upload/info/v2`、`upload/token/v2`、`upload/callback/v2` 申请本地图片上传 key、临时凭证和回调预览地址。
 - `PUT https://<bucket>.cos.<region>.myqcloud.com/<key>` 直传本地图片文件到小黑盒 COS。
 - `POST /bbs/app/comment/create` 发送评论回复。
+- `POST /bbs/app/link/favour` 收藏或取消收藏帖子。
+- `POST /bbs/app/profile/award/link` 点赞或取消点赞帖子。
+- `POST /bbs/app/comment/support` 点赞或取消点赞评论。
+- `POST /bbs/app/profile/follow/user`、`/cancel` 关注或取消关注用户。
 - `POST /chatroom/v2/msg/user` 发送私信。
 - 消息查询、帖子详情、评论发送等业务 API 会带 `hkey`、`_time`、`nonce` 签名参数；扫码登录的 QR 接口按网页原始请求只带轻量参数。
 
 ## 限制
 
 - 图片发送支持 AstrBot `Image` 组件里的 HTTP/HTTPS URL、`file://` URL 和本地图片路径；本地直传目前覆盖 PNG、JPG/JPEG、GIF、WebP、BMP。
-- 私信监听默认关闭；开启前请确认你的隐私和自动回复策略。插件会过滤自己发出的私信，避免自触发循环。
+- 私信监听默认开启；使用前请确认你的隐私和自动回复策略。插件会过滤自己发出的私信，避免自触发循环。
+- 主动逛帖和评论仍然复用网页登录态，不是官方接口；自动浏览、自动评论频率过高可能触发风控，建议保守开启。
 - 账号必须绑定手机号并完成实名认证/安全认证；插件会明确报错，但不能绕过账号侧认证。
 - 语音、视频、文件会转成占位文本。
 - 这是网页登录态模拟，不是官方 Bot API，账号风控风险需要自行承担。

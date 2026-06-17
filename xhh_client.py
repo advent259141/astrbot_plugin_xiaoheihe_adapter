@@ -23,7 +23,15 @@ import aiohttp
 API_ORIGIN = "https://api.xiaoheihe.cn"
 WEB_ORIGIN = "https://www.xiaoheihe.cn"
 MESSAGE_API_PATH = "/bbs/app/user/message"
+FEEDS_API_PATH = "/bbs/app/feeds"
 LINK_TREE_API_PATH = "/bbs/app/link/tree"
+SEARCH_API_PATH = "/bbs/app/api/general/search/v1"
+FAVORITE_FOLDERS_API_PATH = "/bbs/app/profile/fav/folders"
+LINK_FAVOUR_API_PATH = "/bbs/app/link/favour"
+LINK_AWARD_API_PATH = "/bbs/app/profile/award/link"
+COMMENT_SUPPORT_API_PATH = "/bbs/app/comment/support"
+PROFILE_FOLLOW_API_PATH = "/bbs/app/profile/follow/user"
+PROFILE_UNFOLLOW_API_PATH = "/bbs/app/profile/follow/user/cancel"
 COMMENT_CREATE_API_PATH = "/bbs/app/comment/create"
 DIRECT_MESSAGE_API_PATH = "/chatroom/v2/msg/user"
 STRANGER_DIRECT_MESSAGE_API_PATH = "/chat/stranger_messages/"
@@ -166,6 +174,21 @@ class LinkContext:
     rich_text: dict[str, Any] = field(default_factory=dict)
     image_urls: list[str] = field(default_factory=list)
     comment_image_urls: list[str] = field(default_factory=list)
+
+
+@dataclass
+class FeedPostSummary:
+    link_id: str
+    title: str = ""
+    description: str = ""
+    author_id: str = ""
+    author_name: str = ""
+    created_at: int = 0
+    up: int = 0
+    comment_num: int = 0
+    hashtags: list[str] = field(default_factory=list)
+    image_urls: list[str] = field(default_factory=list)
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -785,6 +808,135 @@ def get_link_id_from_message(message: dict[str, Any]) -> str:
         or message.get("link_id")
         or target.get("linkid")
         or target.get("link_id"),
+    )
+
+
+def get_link_id(link: Any) -> str:
+    link = _as_dict(link)
+    return _string(
+        link.get("linkid")
+        or link.get("link_id")
+        or link.get("id")
+        or link.get("linkId"),
+    )
+
+
+def get_link_title_from_link(link: Any) -> str:
+    link = _as_dict(link)
+    return _string(link.get("title") or link.get("topic_title") or link.get("name"))
+
+
+def get_link_description(link: Any) -> str:
+    link = _as_dict(link)
+    return strip_html(
+        link.get("description")
+        or link.get("desc")
+        or link.get("summary")
+        or link.get("text")
+        or "",
+    )
+
+
+def get_link_timestamp(link: Any) -> int:
+    link = _as_dict(link)
+    for key in ("create_at", "created_at", "create_time", "time", "timestamp", "update_time"):
+        value = _number(link.get(key))
+        if value > 0:
+            return int(value / 1000 if value > 100_000_000_000 else value)
+    return 0
+
+
+def get_link_hashtags(link: Any) -> list[str]:
+    link = _as_dict(link)
+    values: list[Any] = []
+    for key in ("hashtags", "topics", "tags", "topic"):
+        values.extend(_as_list(link.get(key)))
+    result: list[str] = []
+    for item in values:
+        if isinstance(item, str):
+            result.append(item)
+            continue
+        item_dict = _as_dict(item)
+        text = _string(
+            item_dict.get("name")
+            or item_dict.get("tag")
+            or item_dict.get("title")
+            or item_dict.get("topic_name"),
+        )
+        if text:
+            result.append(text)
+    return _unique_strings(result)
+
+
+def get_link_author(link: Any) -> tuple[str, str]:
+    link = _as_dict(link)
+    user = _as_dict(link.get("user") or link.get("author") or link.get("userinfo"))
+    return get_user_id(user), get_user_display_name(user)
+
+
+def get_feed_links(data: dict[str, Any]) -> list[dict[str, Any]]:
+    result = _as_dict(data.get("result"))
+    raw_links = (
+        result.get("links")
+        or result.get("feeds")
+        or result.get("list")
+        or data.get("links")
+        or []
+    )
+    links: list[dict[str, Any]] = []
+    for item in _as_list(raw_links):
+        item_dict = _as_dict(item)
+        link = _as_dict(item_dict.get("link")) or item_dict
+        if get_link_id(link):
+            links.append(link)
+    return links
+
+
+def get_search_items(data: dict[str, Any]) -> list[dict[str, Any]]:
+    result = _as_dict(data.get("result"))
+    raw_items = (
+        result.get("items")
+        or result.get("list")
+        or result.get("links")
+        or data.get("items")
+        or []
+    )
+    return [item for item in _as_list(raw_items) if isinstance(item, dict)]
+
+
+def get_search_links(data: dict[str, Any]) -> list[dict[str, Any]]:
+    links: list[dict[str, Any]] = []
+    for item in get_search_items(data):
+        item_type = _string(item.get("type"))
+        info = _as_dict(item.get("info")) or item
+        link = _as_dict(info.get("link")) or info
+        if item_type and item_type != "link":
+            continue
+        if get_link_id(link):
+            links.append(link)
+    return links
+
+
+def summarize_feed_link(link: dict[str, Any]) -> FeedPostSummary:
+    author_id, author_name = get_link_author(link)
+    return FeedPostSummary(
+        link_id=get_link_id(link),
+        title=get_link_title_from_link(link),
+        description=get_link_description(link),
+        author_id=author_id,
+        author_name=author_name,
+        created_at=get_link_timestamp(link),
+        up=int(_number(link.get("up") or link.get("like_num") or link.get("like_count"))),
+        comment_num=int(
+            _number(
+                link.get("comment_num")
+                or link.get("comments_num")
+                or link.get("comment_count"),
+            ),
+        ),
+        hashtags=get_link_hashtags(link),
+        image_urls=get_link_image_urls(link),
+        raw=link,
     )
 
 
@@ -1650,6 +1802,38 @@ class XiaoHeiHeClient:
             "message_count": len(messages),
         }
 
+    async def fetch_feeds(
+        self,
+        *,
+        offset: int = 0,
+        pull: int = 0,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        if not self.heybox_id:
+            raise XiaoHeiHeClientError("缺少 heybox_id")
+        params: dict[str, Any] = {
+            "offset": str(max(0, int(offset or 0))),
+            "pull": str(int(pull or 0)),
+            "heybox_id": self.heybox_id,
+        }
+        data = await self._request_json(
+            "GET",
+            self.build_api_url(FEEDS_API_PATH, params),
+        )
+        if data.get("status") != "ok":
+            raise XiaoHeiHeClientError(api_error_message(data, "首页推荐帖子查询失败"))
+        return data
+
+    async def fetch_feed_post_summaries(
+        self,
+        *,
+        offset: int = 0,
+        pull: int = 0,
+        limit: int = 20,
+    ) -> list[FeedPostSummary]:
+        data = await self.fetch_feeds(offset=offset, pull=pull, limit=limit)
+        return [summarize_feed_link(link) for link in get_feed_links(data)]
+
     async def fetch_link_context(self, link_id: str) -> dict[str, Any] | None:
         if not self.heybox_id:
             raise XiaoHeiHeClientError("缺少 heybox_id")
@@ -1671,6 +1855,64 @@ class XiaoHeiHeClient:
             raise XiaoHeiHeClientError(api_error_message(data, "帖子详情查询失败"))
         return data
 
+    async def search_posts(
+        self,
+        query: str,
+        *,
+        search_type: str = "link",
+        offset: int = 0,
+        limit: int = 10,
+        time_range: str = "",
+        filter_tag: str = "",
+    ) -> dict[str, Any]:
+        if not self.heybox_id:
+            raise XiaoHeiHeClientError("缺少 heybox_id")
+        query = _string(query)
+        if not query:
+            raise XiaoHeiHeClientError("搜索关键词为空")
+        normalized_type = _string(search_type) or "link"
+        if normalized_type not in {"general", "link", "game", "user", "hashtag", "mall"}:
+            normalized_type = "link"
+        params: dict[str, Any] = {
+            "q": query,
+            "search_type": normalized_type,
+            "offset": str(max(0, int(offset or 0))),
+            "limit": str(max(1, min(int(limit or 10), 30))),
+            "is_pull_down": "0",
+            "dw": "628",
+            "heybox_id": self.heybox_id,
+        }
+        if normalized_type == "link" and _string(time_range):
+            params["time_range"] = _string(time_range)
+        if _string(filter_tag):
+            params["filter_tag"] = _string(filter_tag)
+        data = await self._request_json(
+            "GET",
+            self.build_api_url(SEARCH_API_PATH, params),
+        )
+        if data.get("status") != "ok":
+            raise XiaoHeiHeClientError(api_error_message(data, "搜索失败"))
+        return data
+
+    async def search_post_summaries(
+        self,
+        query: str,
+        *,
+        offset: int = 0,
+        limit: int = 10,
+        time_range: str = "",
+        filter_tag: str = "",
+    ) -> list[FeedPostSummary]:
+        data = await self.search_posts(
+            query,
+            search_type="link",
+            offset=offset,
+            limit=limit,
+            time_range=time_range,
+            filter_tag=filter_tag,
+        )
+        return [summarize_feed_link(link) for link in get_search_links(data)]
+
     def _form_headers(self) -> dict[str, str]:
         return {
             "Accept": "application/json",
@@ -1678,6 +1920,115 @@ class XiaoHeiHeClient:
             "Origin": WEB_ORIGIN,
             "Referer": f"{WEB_ORIGIN}/",
         }
+
+    async def fetch_favorite_folders(self) -> list[dict[str, Any]]:
+        if not self.heybox_id:
+            raise XiaoHeiHeClientError("缺少 heybox_id")
+        data = await self._request_json(
+            "GET",
+            self.build_api_url(FAVORITE_FOLDERS_API_PATH, {"heybox_id": self.heybox_id}),
+        )
+        if data.get("status") != "ok":
+            raise XiaoHeiHeClientError(api_error_message(data, "收藏夹查询失败"))
+        result = _as_dict(data.get("result"))
+        return [item for item in _as_list(result.get("folders")) if isinstance(item, dict)]
+
+    async def favour_link(
+        self,
+        link_id: str,
+        *,
+        favour: bool = True,
+        folder_id: Any = None,
+    ) -> dict[str, Any]:
+        if not self.heybox_id:
+            raise XiaoHeiHeClientError("缺少 heybox_id")
+        link_id = _string(link_id)
+        if not link_id:
+            raise XiaoHeiHeClientError("缺少 link_id")
+        body = {
+            "favour_type": "1" if favour else "2",
+            "link_id": link_id,
+            "userid": self.heybox_id,
+        }
+        if _string(folder_id):
+            body["folder_id"] = _string(folder_id)
+        data = await self._request_json(
+            "POST",
+            self.build_api_url(LINK_FAVOUR_API_PATH, {"heybox_id": self.heybox_id}),
+            data=urlencode(body),
+            headers=self._form_headers(),
+        )
+        if data.get("status") != "ok":
+            raise XiaoHeiHeClientError(api_error_message(data, "收藏操作失败"))
+        return data
+
+    async def award_link(self, link_id: str, *, award: bool = True) -> dict[str, Any]:
+        if not self.heybox_id:
+            raise XiaoHeiHeClientError("缺少 heybox_id")
+        link_id = _string(link_id)
+        if not link_id:
+            raise XiaoHeiHeClientError("缺少 link_id")
+        data = await self._request_json(
+            "POST",
+            self.build_api_url(LINK_AWARD_API_PATH, {"heybox_id": self.heybox_id}),
+            data=urlencode(
+                {
+                    "link_id": link_id,
+                    "award_type": "1" if award else "0",
+                },
+            ),
+            headers=self._form_headers(),
+        )
+        if data.get("status") != "ok":
+            raise XiaoHeiHeClientError(api_error_message(data, "帖子点赞操作失败"))
+        return data
+
+    async def support_comment(self, comment_id: str, *, support: bool = True) -> dict[str, Any]:
+        if not self.heybox_id:
+            raise XiaoHeiHeClientError("缺少 heybox_id")
+        comment_id = _string(comment_id)
+        if not comment_id:
+            raise XiaoHeiHeClientError("缺少 comment_id")
+        data = await self._request_json(
+            "POST",
+            self.build_api_url(COMMENT_SUPPORT_API_PATH, {"heybox_id": self.heybox_id}),
+            data=urlencode(
+                {
+                    "comment_id": comment_id,
+                    "support_type": "1" if support else "2",
+                },
+            ),
+            headers=self._form_headers(),
+        )
+        if data.get("status") != "ok":
+            raise XiaoHeiHeClientError(api_error_message(data, "评论点赞操作失败"))
+        return data
+
+    async def follow_user(
+        self,
+        following_id: str,
+        *,
+        follow: bool = True,
+        link_id: str = "",
+    ) -> dict[str, Any]:
+        if not self.heybox_id:
+            raise XiaoHeiHeClientError("缺少 heybox_id")
+        following_id = _string(following_id)
+        if not following_id:
+            raise XiaoHeiHeClientError("缺少 following_id")
+        body = {"following_id": following_id}
+        if _string(link_id):
+            body["link_id"] = _string(link_id)
+        path = PROFILE_FOLLOW_API_PATH if follow else PROFILE_UNFOLLOW_API_PATH
+        data = await self._request_json(
+            "POST",
+            self.build_api_url(path, {"heybox_id": self.heybox_id}),
+            data=urlencode(body),
+            headers=self._form_headers(),
+        )
+        if data.get("status") != "ok":
+            raise XiaoHeiHeClientError(api_error_message(data, "关注操作失败"))
+        return data
 
     async def prepare_comment_image_urls(self, image_urls: Iterable[Any]) -> list[str]:
         prepared: list[str] = []

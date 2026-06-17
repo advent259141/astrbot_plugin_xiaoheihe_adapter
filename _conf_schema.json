@@ -16,5 +16,47 @@
     "type": "int",
     "hint": "插件登录页创建二维码和轮询扫码状态的请求超时秒数。",
     "default": 20
+  },
+  "enable_llm_browse_tools": {
+    "description": "启用 LLM 逛帖工具",
+    "type": "bool",
+    "hint": "注册小黑盒读帖工具，让模型可以读取首页推荐帖子和指定帖子上下文。",
+    "default": true
+  },
+  "register_llm_comment_tool": {
+    "description": "注册 LLM 主评论工具",
+    "type": "bool",
+    "hint": "是否在工具列表中显示主动评论工具。即使注册，默认也不会实际发送，需另行开启允许发送。",
+    "default": true
+  },
+  "enable_llm_comment_tool": {
+    "description": "允许 LLM 主动评论",
+    "type": "bool",
+    "hint": "允许工具代表当前登录账号在帖子下发送主评论。工具仍要求 confirm=true。",
+    "default": false
+  },
+  "register_llm_action_tools": {
+    "description": "注册 LLM 主动操作工具",
+    "type": "bool",
+    "hint": "是否在工具列表中显示收藏、点赞、评论点赞、关注等主动操作工具。即使注册，默认也不会实际执行，需另行开启允许操作。",
+    "default": true
+  },
+  "enable_llm_action_tools": {
+    "description": "允许 LLM 主动操作",
+    "type": "bool",
+    "hint": "允许工具代表当前登录账号执行收藏、点赞、评论点赞、关注等操作。每次调用仍要求 confirm=true。",
+    "default": false
+  },
+  "tool_max_comment_chars": {
+    "description": "工具评论最大字符数",
+    "type": "int",
+    "hint": "LLM 主动评论超出该长度会被截断。",
+    "default": 500
+  },
+  "tool_comment_cooldown_seconds": {
+    "description": "工具评论冷却秒数",
+    "type": "int",
+    "hint": "LLM 主动评论连续发送的最小间隔。",
+    "default": 60
   }
 }

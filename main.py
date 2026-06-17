@@ -18,8 +18,10 @@ class XiaoHeiHeAdapterPlugin(Star):
         # Importing the module registers the platform adapter through the decorator.
         from . import xhh_adapter as _xhh_adapter  # noqa: F401
         from .xhh_client import XiaoHeiHeClient
+        from .xhh_tools import build_xiaoheihe_tools
 
         self._client_cls = XiaoHeiHeClient
+        self.context.add_llm_tools(*build_xiaoheihe_tools(self.config))
 
         context.register_web_api(
             f"/{PLUGIN_NAME}/status",
